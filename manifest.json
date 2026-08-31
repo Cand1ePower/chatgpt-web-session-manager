@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ChatGPT Card Manager",
-  "version": "0.4.0",
-  "description": "Safely batch-load, cache, preview, archive and delete ChatGPT conversations with adaptive rate limiting.",
+  "version": "0.5.0",
+  "description": "Card-based ChatGPT conversation manager with manual batch loading, local cache and conservative rate limiting.",
   "content_scripts": [
     {
       "matches": [

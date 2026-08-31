@@ -3,14 +3,17 @@
   window.__CGPT_CARD_MANAGER__ = true;
 
   const BATCH_SIZE = 24;
+  const LIST_FETCH_MAX = 100;
   const DETAIL_CONCURRENCY = 1;
-  const DETAIL_MIN_INTERVAL_MS = 2600;
-  const BACKGROUND_DETAIL_INTERVAL_MS = 7000;
+  const DETAIL_MIN_INTERVAL_MS = 3200;
+  const MANUAL_DETAIL_INTERVAL_MS = 4500;
+  const BACKGROUND_DETAIL_INTERVAL_MS = 9000;
   const LIST_MIN_INTERVAL_MS = 1800;
   const MUTATION_MIN_INTERVAL_MS = 2200;
   const GLOBAL_MIN_INTERVAL_MS = 900;
-  const MAX_BACKGROUND_QUEUE = 3;
-  const MAX_429_RETRIES = 2;
+  const MAX_BACKGROUND_QUEUE = 2;
+  const AUTO_BACKGROUND_PREFETCH = false;
+  const MAX_429_RETRIES = 0;
   const HOVER_EXPAND_DELAY_MS = 500;
   const HOVER_COLLAPSE_DELAY_MS = 110;
   const CACHE_DB_NAME = 'chatdeck-cache-v1';
@@ -47,6 +50,13 @@
     expandedId: null,
     hoverTimer: null,
     collapseTimer: null,
+    lastManualRequestAt: 0,
+    manualLoading: false,
+    manualPendingIds: new Set(),
+    manualDone: 0,
+    manualFailed: 0,
+    manualTotal: 0,
+    manualLabel: '',
   };
 
   const host = document.createElement('div');
@@ -81,13 +91,13 @@
         border-radius: 22px; background: color-mix(in srgb, #f6f6f5 94%, transparent);
         color:#171719; border:1px solid rgba(0,0,0,.09);
         box-shadow: 0 30px 90px rgba(0,0,0,.30);
-        display:grid; grid-template-rows:auto 1fr auto;
+        display:grid; grid-template-rows:auto auto 1fr auto;
         font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
       @media (prefers-color-scheme: dark) {
         .panel { background: color-mix(in srgb, #171719 95%, transparent); color:#f3f3f4; border-color:rgba(255,255,255,.10); }
       }
-      .topbar, .footer { position:relative; z-index:70; background:inherit; }
+      .topbar, .footer, .rateBanner { position:relative; z-index:70; background:inherit; }
       .topbar { min-height:76px; padding: 14px 16px; display:flex; align-items:center; gap:12px; border-bottom:1px solid rgba(127,127,127,.18); }
       .brand { min-width:190px; padding-left:2px; }
       .brand b { display:block; font-size:17px; letter-spacing:-.02em; }
@@ -102,6 +112,30 @@
       .btn.danger:hover { background:rgba(220,38,38,.16); }
       .btn:disabled { opacity:.42; cursor:not-allowed; transform:none; }
       .close { width:40px; padding:0; font-size:19px; }
+
+
+      .rateBanner {
+        margin:0; padding:0 16px; max-height:0; overflow:hidden; opacity:0;
+        border-bottom:1px solid transparent;
+        transition:max-height .24s ease, opacity .18s ease, padding .24s ease, border-color .24s ease;
+      }
+      .rateBanner.show {
+        max-height:86px; opacity:1; padding:10px 16px;
+        background:rgba(220,72,54,.09); border-bottom-color:rgba(220,72,54,.18);
+      }
+      .rateInner { display:flex; align-items:center; gap:11px; min-height:44px; }
+      .rateIcon {
+        flex:0 0 auto; width:30px; height:30px; border-radius:10px; display:grid; place-items:center;
+        font-size:18px; font-weight:800; color:#b42318; background:rgba(220,72,54,.13);
+      }
+      .rateCopy { min-width:0; display:flex; flex-direction:column; gap:3px; }
+      .rateCopy b { font-size:13px; color:#b42318; }
+      .rateCopy span { font-size:11.5px; line-height:1.45; opacity:.72; }
+      @media (prefers-color-scheme: dark) {
+        .rateBanner.show { background:rgba(248,113,113,.10); border-bottom-color:rgba(248,113,113,.18); }
+        .rateIcon, .rateCopy b { color:#ff9b91; }
+        .rateIcon { background:rgba(248,113,113,.12); }
+      }
 
       .content { min-height:0; overflow:auto; padding: 16px; overscroll-behavior:contain; position:relative; }
       .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:12px; align-items:start; }
@@ -205,7 +239,10 @@
       .msgToggle:hover { opacity:.9; }
       .moreHint { padding:8px; text-align:center; font-size:10.5px; opacity:.42; }
 
-      .footer { min-height:64px; padding:11px 16px; border-top:1px solid rgba(127,127,127,.18); display:flex; align-items:center; gap:10px; }
+      .footer { min-height:64px; padding:11px 16px; border-top:1px solid rgba(127,127,127,.18); display:flex; align-items:center; gap:9px; flex-wrap:wrap; }
+      .loadGroup { display:flex; align-items:center; gap:6px; }
+      .countSelect { height:40px; min-width:68px; border:0; outline:none; border-radius:12px; padding:0 28px 0 10px; color:inherit; background:rgba(127,127,127,.11); box-shadow:inset 0 0 0 1px rgba(127,127,127,.08); cursor:pointer; }
+      .countSelect:hover { background:rgba(127,127,127,.16); }
       .stats { margin-right:auto; font-size:12px; opacity:.62; }
       .progress { font-size:12px; min-width:150px; text-align:right; opacity:.66; }
       .toolbarSep { width:1px; height:26px; background:rgba(127,127,127,.18); }
@@ -217,16 +254,26 @@
     <div class="overlay">
       <section class="panel">
         <header class="topbar">
-          <div class="brand"><b>Chat Deck</b><span>分批读取 · 本地缓存 · 自适应限速</span></div>
+          <div class="brand"><b>Chat Deck</b><span>分批读取 · 本地缓存 · 手动按需加载</span></div>
           <input class="search" placeholder="搜索已加载的标题或正文…" />
           <button class="btn" data-act="selectVisible">选择当前</button>
           <button class="btn close" data-act="close" title="关闭">×</button>
         </header>
+        <div class="rateBanner" role="alert" aria-live="assertive">
+          <div class="rateInner"><div class="rateIcon">!</div><div class="rateCopy"><b>请求过多，请稍后再试</b><span class="rateDetail">ChatGPT 暂时限制了请求。本地已缓存内容仍可正常浏览。</span></div></div>
+        </div>
         <main class="content"><div class="grid"></div></main>
         <div class="focusVeil"></div>
         <footer class="footer">
           <div class="stats">尚未加载</div>
-          <button class="btn" data-act="loadMore">加载下一批</button>
+          <div class="loadGroup">
+            <button class="btn" data-act="loadCurrent">加载当前页</button>
+            <select class="countSelect" aria-label="批量加载数量">
+              <option value="10" selected>10</option><option value="30">30</option><option value="50">50</option><option value="100">100</option><option value="all">全部</option>
+            </select>
+            <button class="btn primary" data-act="loadCount">加载 10 个</button>
+            <button class="btn" data-act="loadMore">加载更多列表</button>
+          </div>
           <div class="toolbarSep"></div>
           <button class="btn" data-act="archive">归档所选</button>
           <button class="btn danger" data-act="delete">删除所选</button>
@@ -247,6 +294,11 @@
   const progress = $('.progress');
   const toast = $('.toast');
   const loadMoreBtn = $('[data-act="loadMore"]');
+  const loadCurrentBtn = $('[data-act="loadCurrent"]');
+  const loadCountBtn = $('[data-act="loadCount"]');
+  const countSelect = $('.countSelect');
+  const rateBanner = $('.rateBanner');
+  const rateDetail = $('.rateDetail');
   const archiveBtn = $('[data-act="archive"]');
   const deleteBtn = $('[data-act="delete"]');
 
@@ -260,7 +312,7 @@
   async function getToken() {
     if (state.token) return state.token;
     const res = await fetch('/api/auth/session', { credentials: 'include' });
-    if (!res.ok) throw new Error(`无法读取登录状态 (${res.status})`);
+    if (!res.ok) throw new Error(friendlyHttpError(res.status, '登录状态读取'));
     const data = await res.json();
     state.token = data?.accessToken || null;
     return state.token;
@@ -339,6 +391,42 @@
     localStorage.setItem('chatdeck:prefetchDisabledUntil', String(state.prefetchDisabledUntil || 0));
   }
 
+  function friendlyHttpError(status, context = '请求') {
+    if (Number(status) === 429) return '请求过多，请稍后再试';
+    return `${context}失败 (${status})`;
+  }
+
+  function formatCooldown(ms) {
+    const sec = Math.max(0, Math.ceil(ms / 1000));
+    if (sec < 60) return `${sec} 秒`;
+    const min = Math.floor(sec / 60);
+    const rest = sec % 60;
+    return rest ? `${min} 分 ${rest} 秒` : `${min} 分钟`;
+  }
+
+  function updateRateBanner() {
+    const shared = sharedNumber('chatdeck:rateLimitUntil');
+    state.rateLimitUntil = Math.max(state.rateLimitUntil, shared);
+    const remain = state.rateLimitUntil - Date.now();
+    if (remain > 0) {
+      rateBanner.classList.add('show');
+      rateDetail.textContent = `ChatGPT 暂时限制了请求，冷却剩余约 ${formatCooldown(remain)}。已暂停批量/自动请求，本地缓存仍可正常浏览；冷却结束后请重新点击加载。`;
+    } else {
+      rateBanner.classList.remove('show');
+      rateDetail.textContent = 'ChatGPT 暂时限制了请求。本地已缓存内容仍可正常浏览。';
+    }
+    if (typeof updateStats === 'function') updateStats();
+  }
+
+  function abortManualBatchForRateLimit() {
+    if (!state.manualLoading) return;
+    state.queue = state.queue.filter(item => item.source !== 'manual');
+    state.manualPendingIds.clear();
+    state.manualLoading = false;
+    progress.textContent = '请求过多，请稍后再试';
+    updateStats();
+  }
+
   function setRateLimit(ms, kind = 'detail') {
     state.rateLimitHits += 1;
     state.rateLimitUntil = Math.max(state.rateLimitUntil, Date.now() + ms);
@@ -347,8 +435,10 @@
     const base = kind === 'list' ? LIST_MIN_INTERVAL_MS : kind === 'mutate' ? MUTATION_MIN_INTERVAL_MS : DETAIL_MIN_INTERVAL_MS;
     state.adaptiveIntervals[kind] = Math.min(15000, Math.max(base, Math.round((state.adaptiveIntervals[kind] || base) * 1.7)));
     persistRateState();
-    progress.textContent = `请求过快，安全冷却 ${Math.ceil(ms / 1000)}s`;
-    showToast(`触发 429：已暂停后台预读 30 分钟，并冷却 ${Math.ceil(ms / 1000)} 秒`);
+    abortManualBatchForRateLimit();
+    updateRateBanner();
+    progress.textContent = '请求过多，请稍后再试';
+    showToast('请求过多，请稍后再试');
   }
 
   function sharedNumber(key) {
@@ -499,15 +589,18 @@
     updateStats();
   }
 
-  async function loadNextBatch() {
+  async function loadNextBatch(requestedLimit = BATCH_SIZE) {
     if (state.loadingList || (state.offset >= state.total && state.total !== 0)) return;
     state.loadingList = true;
     loadMoreBtn.disabled = true;
+    updateStats();
     loadMoreBtn.textContent = '读取中…';
+    let loadedCount = 0;
     try {
-      const url = `/backend-api/conversations?offset=${state.offset}&limit=${BATCH_SIZE}&order=updated`;
-      const res = await apiWith429Retry(url, {}, 1, 'list');
-      if (!res.ok) throw new Error(`列表读取失败 (${res.status})`);
+      const limit = Math.max(1, Math.min(LIST_FETCH_MAX, Number(requestedLimit) || BATCH_SIZE));
+      const url = `/backend-api/conversations?offset=${state.offset}&limit=${limit}&order=updated`;
+      const res = await apiWith429Retry(url, {}, 0, 'list');
+      if (!res.ok) throw new Error(friendlyHttpError(res.status, '列表读取'));
       const data = await res.json();
       const items = Array.isArray(data?.items) ? data.items : [];
       const known = new Set(state.chats.map(x => x.id));
@@ -520,6 +613,7 @@
       }
       state.total = Number.isFinite(data?.total) ? data.total : Math.max(state.total, state.chats.length);
       state.offset += items.length;
+      loadedCount = items.length;
       render();
       observeCards();
       hydrateBatchFromCache(items).catch(() => {});
@@ -529,8 +623,22 @@
     } finally {
       state.loadingList = false;
       loadMoreBtn.disabled = state.offset >= state.total;
-      loadMoreBtn.textContent = state.offset >= state.total && state.total ? '已全部加载' : '加载下一批';
+      loadMoreBtn.textContent = state.offset >= state.total && state.total ? '已全部加载' : '加载更多列表';
       updateStats();
+      return loadedCount;
+    }
+  }
+
+  async function ensureListCount(target) {
+    const wantAll = target === Infinity;
+    let guard = 0;
+    while (guard++ < 200) {
+      if (!wantAll && state.chats.length >= target) break;
+      if (state.total && state.offset >= state.total) break;
+      const remaining = wantAll ? LIST_FETCH_MAX : Math.max(1, target - state.chats.length);
+      const before = state.offset;
+      const got = await loadNextBatch(Math.min(LIST_FETCH_MAX, remaining));
+      if (!got || state.offset <= before) break;
     }
   }
 
@@ -602,7 +710,7 @@
     if (card.classList.contains('expanded') && !msgs) setExpandedLoading(card, isLoading);
   }
 
-  async function enqueueDetail(chatId, priority = false) {
+  async function enqueueDetail(chatId, source = 'background') {
     if (state.details.has(chatId) || state.detailPromises.has(chatId)) return;
 
     // Always consult persistent cache before creating a network job.
@@ -614,32 +722,36 @@
 
     const existing = state.queue.findIndex(x => x.id === chatId);
     if (existing >= 0) {
-      if (priority) {
-        const item = state.queue.splice(existing, 1)[0];
-        item.priority = true;
-        state.queue.unshift(item);
+      const rank = { hover: 3, manual: 2, background: 1 };
+      const item = state.queue[existing];
+      if ((rank[source] || 0) > (rank[item.source] || 0)) {
+        state.queue.splice(existing, 1);
+        // A manually queued item stays part of that batch even when the user hovers it;
+        // moving it to the front gives priority without making pointer-out cancel it.
+        if (!(source === 'hover' && item.source === 'manual')) item.source = source;
+        source === 'hover' ? state.queue.unshift(item) : state.queue.push(item);
       }
       pumpQueue();
       return;
     }
 
-    if (!priority) {
+    if (source === 'background') {
       if (Date.now() < state.prefetchDisabledUntil || document.hidden || !state.opened) return;
-      const backgroundCount = state.queue.filter(x => !x.priority).length;
+      const backgroundCount = state.queue.filter(x => x.source === 'background').length;
       if (backgroundCount >= MAX_BACKGROUND_QUEUE) return;
     }
-    const item = { id: chatId, priority, queuedAt:Date.now() };
-    priority ? state.queue.unshift(item) : state.queue.push(item);
+    const item = { id: chatId, source, queuedAt:Date.now() };
+    source === 'hover' ? state.queue.unshift(item) : state.queue.push(item);
     pumpQueue();
   }
 
   function removeBackgroundQueued(chatId) {
-    state.queue = state.queue.filter(x => x.id !== chatId || x.priority);
+    state.queue = state.queue.filter(x => x.id !== chatId || x.source !== 'background');
   }
 
   function cancelQueuedPriority(chatId) {
     if (state.detailPromises.has(chatId)) return;
-    state.queue = state.queue.filter(x => x.id !== chatId);
+    state.queue = state.queue.filter(x => x.id !== chatId || x.source !== 'hover');
     updateCardLoadState(chatId);
   }
 
@@ -647,10 +759,12 @@
     clearTimeout(state.queueTimer);
     if (state.activeLoads >= DETAIL_CONCURRENCY || !state.queue.length || !state.opened || document.hidden) return;
 
-    const priorityIndex = state.queue.findIndex(x => x.priority);
-    const index = priorityIndex >= 0 ? priorityIndex : 0;
+    const hoverIndex = state.queue.findIndex(x => x.source === 'hover');
+    const manualIndex = state.queue.findIndex(x => x.source === 'manual');
+    const index = hoverIndex >= 0 ? hoverIndex : (manualIndex >= 0 ? manualIndex : 0);
     const item = state.queue[index];
-    const isBackground = !item.priority;
+    const isBackground = item.source === 'background';
+    const isManual = item.source === 'manual';
 
     if (isBackground) {
       if (Date.now() < state.prefetchDisabledUntil || state.expandedId) {
@@ -665,6 +779,14 @@
       }
     }
 
+    if (isManual) {
+      const manualSpacing = MANUAL_DETAIL_INTERVAL_MS - (Date.now() - state.lastManualRequestAt);
+      if (manualSpacing > 0) {
+        state.queueTimer = setTimeout(pumpQueue, manualSpacing + 50);
+        return;
+      }
+    }
+
     state.queue.splice(index, 1);
     const id = item.id;
     const chat = state.chats.find(c => c.id === id);
@@ -674,13 +796,14 @@
 
     const p = (async () => {
       try {
-        const res = await apiWith429Retry(`/backend-api/conversation/${encodeURIComponent(id)}`, {}, item.priority ? 2 : 0, 'detail');
+        const res = await apiWith429Retry(`/backend-api/conversation/${encodeURIComponent(id)}`, {}, 0, 'detail');
         state.lastDetailRequestAt = Date.now();
+        if (isManual) state.lastManualRequestAt = Date.now();
         if (res.status === 429) {
-          state.detailErrors.set(id, '429：服务器正在限流，已进入安全冷却');
+          state.detailErrors.set(id, '请求过多，请稍后再试');
           return;
         }
-        if (!res.ok) throw new Error(`正文读取失败 (${res.status})`);
+        if (!res.ok) throw new Error(friendlyHttpError(res.status, '正文读取'));
         const data = await res.json();
         const parsed = parseConversation(data);
         state.details.set(id, parsed.messages);
@@ -695,10 +818,96 @@
         state.activeLoads--;
         if (state.details.has(id)) updateCardDetail(id);
         else updateCardLoadState(id);
+        finishManualItem(id, state.details.has(id));
         pumpQueue();
       }
     })();
     state.detailPromises.set(id, p);
+  }
+
+  function finishManualItem(id, success) {
+    if (!state.manualPendingIds.has(id)) return;
+    state.manualPendingIds.delete(id);
+    success ? state.manualDone++ : state.manualFailed++;
+    const finished = state.manualDone + state.manualFailed;
+    progress.textContent = `${state.manualLabel || '读取'} ${finished} / ${state.manualTotal}${state.manualFailed ? ` · 失败 ${state.manualFailed}` : ''}`;
+    if (!state.manualPendingIds.size) {
+      state.manualLoading = false;
+      const failed = state.manualFailed;
+      showToast(failed ? `读取完成，${failed} 个失败` : '读取完成');
+      updateStats();
+      setTimeout(() => { if (!state.manualLoading && Date.now() >= state.rateLimitUntil) progress.textContent = ''; }, 2200);
+    }
+  }
+
+  async function startManualDetailLoad(ids, label = '读取') {
+    if (state.manualLoading) { showToast('已有批量读取任务正在进行'); return; }
+    if (Date.now() < Math.max(state.rateLimitUntil, sharedNumber('chatdeck:rateLimitUntil'))) {
+      updateRateBanner();
+      showToast('请求过多，请稍后再试');
+      return;
+    }
+    const unique = [...new Set(ids)].filter(Boolean);
+    if (!unique.length) { showToast('当前没有可加载的对话'); return; }
+
+    // Cache lookup is local and does not consume network quota.
+    await Promise.all(unique.map(async id => {
+      if (state.details.has(id)) return;
+      const chat = state.chats.find(c => c.id === id);
+      if (chat && await hydrateFromCache(chat)) updateCardDetail(id);
+    }));
+
+    const pending = unique.filter(id => !state.details.has(id) && !state.detailPromises.has(id));
+    if (!pending.length) { showToast('这些对话已经在本地缓存中'); updateStats(); return; }
+
+    state.manualLoading = true;
+    state.manualPendingIds = new Set(pending);
+    state.manualDone = 0;
+    state.manualFailed = 0;
+    state.manualTotal = pending.length;
+    state.manualLabel = label;
+    progress.textContent = `${label} 0 / ${pending.length}`;
+
+    for (const id of pending) {
+      const existing = state.queue.findIndex(x => x.id === id);
+      if (existing >= 0) {
+        state.queue[existing].source = state.queue[existing].source === 'hover' ? 'hover' : 'manual';
+      } else {
+        state.queue.push({ id, source:'manual', queuedAt:Date.now() });
+      }
+    }
+    updateStats();
+    pumpQueue();
+  }
+
+  function visibleCardIds() {
+    const viewport = content.getBoundingClientRect();
+    return [...grid.querySelectorAll('.card')].filter(card => {
+      const r = card.getBoundingClientRect();
+      return r.bottom > viewport.top + 2 && r.top < viewport.bottom - 2 && r.right > viewport.left && r.left < viewport.right;
+    }).map(card => card.dataset.id).filter(Boolean);
+  }
+
+  async function loadCurrentPageDetails() {
+    collapseExpanded(true);
+    const ids = visibleCardIds();
+    await startManualDetailLoad(ids, '当前页');
+  }
+
+  async function loadCountDetails() {
+    collapseExpanded(true);
+    const raw = countSelect.value;
+    const wantAll = raw === 'all';
+    const count = wantAll ? Infinity : Number(raw || 10);
+    loadCountBtn.disabled = true;
+    try {
+      if (!state.query.trim()) await ensureListCount(count);
+      const list = filteredChats();
+      const ids = wantAll ? list.map(c => c.id) : list.slice(0, count).map(c => c.id);
+      await startManualDetailLoad(ids, wantAll ? '全部读取' : `读取 ${Math.min(count, ids.length)} 个`);
+    } finally {
+      updateStats();
+    }
   }
 
   function filteredChats() {
@@ -732,7 +941,7 @@
     const err = state.detailErrors.get(id);
     return `<div class="waitingPreview">
       <div class="waitingLine"><span class="waitingDot"></span><span>${escapeAttr(err || '悬停 0.5 秒展开并读取对话')}</span></div>
-      <div class="waitingHint">未缓存的正文不会批量高速请求；后台只会极低速预读少量可见卡片。</div>
+      <div class="waitingHint">未缓存正文不会自动批量请求；可悬停读取，或使用底部“加载当前页 / 加载 N 个”。</div>
     </div>`;
   }
 
@@ -745,7 +954,7 @@
     digest.innerHTML = `<div class="digestHead"><b>对话速览</b><span>${active ? '安全限速读取中' : '等待读取'}</span></div>
       <div class="loadingStatus" style="margin-top:14px">${active ? '<span class="spinner"></span>' : '<span class="waitingDot"></span>'}<span>${escapeAttr(err || (active ? '正在读取并写入本地缓存…' : '即将读取；已缓存的对话以后会直接打开'))}</span></div>
       <div class="skeleton s1"></div><div class="skeleton s2"></div><div class="skeleton s3"></div>`;
-    messages.innerHTML = `<div class="moreHint">为降低 429 风险，同一时间只读取一个正文；任何 429 都会自动暂停后台预读。</div>`;
+    messages.innerHTML = `<div class="moreHint">为降低请求过多的风险，同一时间只读取一个正文；如被限流会立即停止批量请求并显示冷却提示。</div>`;
   }
 
   function loadingPreviewHTML() {
@@ -872,8 +1081,8 @@
       for (const e of entries) {
         const id = e.target.dataset.id;
         if (e.isIntersecting) {
-          // Only a tiny low-speed queue is allowed. Cache is checked first and costs no network request.
-          enqueueDetail(id, false);
+          // Network prefetch is disabled by default in v0.5. Persistent cache is hydrated when list metadata arrives.
+          if (AUTO_BACKGROUND_PREFETCH) enqueueDetail(id, 'background');
         } else {
           removeBackgroundQueued(id);
         }
@@ -884,9 +1093,14 @@
 
   function updateStats() {
     const visible = filteredChats().length;
-    const safe = Date.now() < state.prefetchDisabledUntil ? '后台预读已暂停' : '安全预读';
+    const safe = !AUTO_BACKGROUND_PREFETCH ? '自动预读关闭' : (Date.now() < state.prefetchDisabledUntil ? '后台预读已暂停' : '安全预读');
     stats.textContent = `列表 ${state.chats.length}${state.total ? ` / ${state.total}` : ''} · 当前 ${visible} · 缓存命中 ${state.cacheHits} · ${safe} · 已选 ${state.selected.size}`;
-    archiveBtn.disabled = deleteBtn.disabled = state.selected.size === 0 || state.working;
+    const rateCooling = Date.now() < Math.max(state.rateLimitUntil, sharedNumber('chatdeck:rateLimitUntil'));
+    archiveBtn.disabled = deleteBtn.disabled = state.selected.size === 0 || state.working || state.manualLoading || rateCooling;
+    loadCurrentBtn.disabled = state.working || state.manualLoading || state.loadingList || rateCooling;
+    loadCountBtn.disabled = state.working || state.manualLoading || state.loadingList || rateCooling;
+    countSelect.disabled = state.working || state.manualLoading || state.loadingList || rateCooling;
+    loadMoreBtn.disabled = state.loadingList || state.manualLoading || rateCooling || (state.total > 0 && state.offset >= state.total);
   }
 
   function expandCard(card) {
@@ -914,7 +1128,7 @@
     panel.classList.add('hasExpanded');
     state.expandedId = id;
     if (!state.details.has(id)) setExpandedLoading(card, state.loadingIds.has(id));
-    enqueueDetail(id, true);
+    enqueueDetail(id, 'hover');
   }
 
   function collapseExpanded(immediate = false) {
@@ -935,8 +1149,8 @@
   }
 
   async function patchConversation(id, body) {
-    const res = await apiWith429Retry(`/backend-api/conversation/${encodeURIComponent(id)}`, { method:'PATCH', body:JSON.stringify(body) }, 2, 'mutate');
-    if (!res.ok) throw new Error(`操作失败 (${res.status})`);
+    const res = await apiWith429Retry(`/backend-api/conversation/${encodeURIComponent(id)}`, { method:'PATCH', body:JSON.stringify(body) }, 0, 'mutate');
+    if (!res.ok) throw new Error(friendlyHttpError(res.status, '操作'));
   }
 
   async function batchAction(mode, ids) {
@@ -968,12 +1182,17 @@
       } catch (e) {
         failed++;
         console.error('[Chat Deck]', id, e);
+        if ((e?.message || '') === '请求过多，请稍后再试') {
+          progress.textContent = '请求过多，请稍后再试';
+          break;
+        }
       }
       // No fixed burst loop: the global mutation scheduler reserves a safe cross-tab slot for every request.
     }
     state.working = false;
-    progress.textContent = failed ? `完成 ${ok}，失败 ${failed}` : `完成 ${ok}`;
-    showToast(`${label}完成：${ok}${failed ? `，失败 ${failed}` : ''}`);
+    const rateStopped = Date.now() < Math.max(state.rateLimitUntil, sharedNumber('chatdeck:rateLimitUntil'));
+    progress.textContent = rateStopped ? '请求过多，请稍后再试' : (failed ? `完成 ${ok}，失败 ${failed}` : `完成 ${ok}`);
+    showToast(rateStopped ? '请求过多，请稍后再试' : `${label}完成：${ok}${failed ? `，失败 ${failed}` : ''}`);
     updateStats();
     setTimeout(() => { if (!state.working) progress.textContent = ''; }, 2200);
   }
@@ -981,12 +1200,14 @@
   root.addEventListener('click', (e) => {
     const act = e.target.closest('[data-act]')?.dataset.act;
     if (e.target.closest('.launcher')) {
-      state.opened = true; overlay.classList.add('open');
+      state.opened = true; overlay.classList.add('open'); updateRateBanner();
       if (!state.chats.length) loadNextBatch();
       return;
     }
     if (act === 'close') { collapseExpanded(true); state.opened = false; overlay.classList.remove('open'); return; }
     if (act === 'loadMore') { loadNextBatch(); return; }
+    if (act === 'loadCurrent') { loadCurrentPageDetails(); return; }
+    if (act === 'loadCount') { loadCountDetails(); return; }
     if (act === 'selectVisible') {
       const list = filteredChats();
       const all = list.length && list.every(c => state.selected.has(c.id));
@@ -1038,6 +1259,10 @@
     if (state.expandedId === card.dataset.id) collapseExpanded(false);
   });
 
+  countSelect.addEventListener('change', () => {
+    loadCountBtn.textContent = countSelect.value === 'all' ? '加载全部' : `加载 ${countSelect.value} 个`;
+  });
+
   search.addEventListener('input', () => {
     state.query = search.value;
     render(); observeCards();
@@ -1047,7 +1272,7 @@
   content.addEventListener('scroll', () => {
     if (state.expandedId) collapseExpanded(true);
     clearTimeout(scrollLoadTimer);
-    if (state.loadingList || !state.total || state.offset >= state.total) return;
+    if (state.loadingList || state.manualLoading || !state.total || state.offset >= state.total) return;
     if (content.scrollTop + content.clientHeight > content.scrollHeight - 520) {
       scrollLoadTimer = setTimeout(() => loadNextBatch(), 650);
     }
@@ -1057,6 +1282,8 @@
     if (!document.hidden && state.opened) pumpQueue();
   });
 
+  updateRateBanner();
+  setInterval(updateRateBanner, 1000);
   openCacheDb().catch(() => {});
 
   document.addEventListener('keydown', (e) => {
@@ -1064,6 +1291,7 @@
       e.preventDefault();
       state.opened = !state.opened;
       overlay.classList.toggle('open', state.opened);
+      if (state.opened) updateRateBanner();
       if (!state.opened) collapseExpanded(true);
       if (state.opened && !state.chats.length) loadNextBatch();
     }
