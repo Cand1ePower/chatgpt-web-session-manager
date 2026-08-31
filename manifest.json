@@ -1,15 +1,21 @@
 {
   "manifest_version": 3,
   "name": "ChatGPT Card Manager",
-  "version": "0.3.0",
-  "description": "Batch-load, skim, preview, archive and delete ChatGPT conversations in animated overlay cards.",
+  "version": "0.4.0",
+  "description": "Safely batch-load, cache, preview, archive and delete ChatGPT conversations with adaptive rate limiting.",
   "content_scripts": [
     {
-      "matches": ["https://chatgpt.com/*"],
-      "js": ["content.js"],
+      "matches": [
+        "https://chatgpt.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ],
-  "host_permissions": ["https://chatgpt.com/*"],
+  "host_permissions": [
+    "https://chatgpt.com/*"
+  ],
   "permissions": []
 }

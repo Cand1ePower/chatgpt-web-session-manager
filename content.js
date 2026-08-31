@@ -4,12 +4,19 @@
 
   const BATCH_SIZE = 24;
   const DETAIL_CONCURRENCY = 1;
-  const DETAIL_MIN_INTERVAL_MS = 1100;
-  const MAX_BACKGROUND_QUEUE = 8;
-  const DELETE_DELAY_MS = 800;
-  const MAX_429_RETRIES = 4;
+  const DETAIL_MIN_INTERVAL_MS = 2600;
+  const BACKGROUND_DETAIL_INTERVAL_MS = 7000;
+  const LIST_MIN_INTERVAL_MS = 1800;
+  const MUTATION_MIN_INTERVAL_MS = 2200;
+  const GLOBAL_MIN_INTERVAL_MS = 900;
+  const MAX_BACKGROUND_QUEUE = 3;
+  const MAX_429_RETRIES = 2;
   const HOVER_EXPAND_DELAY_MS = 500;
   const HOVER_COLLAPSE_DELAY_MS = 110;
+  const CACHE_DB_NAME = 'chatdeck-cache-v1';
+  const CACHE_STORE = 'conversations';
+  const CACHE_SOFT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+  const PREFETCH_DISABLE_AFTER_429_MS = 30 * 60 * 1000;
 
   const state = {
     token: null,
@@ -24,10 +31,17 @@
     detailPromises: new Map(),
     queue: [],
     activeLoads: 0,
+    loadingIds: new Set(),
+    detailErrors: new Map(),
     lastDetailRequestAt: 0,
-    rateLimitUntil: 0,
-    rateLimitHits: 0,
+    lastApiAt: 0,
+    rateLimitUntil: Number(localStorage.getItem('chatdeck:rateLimitUntil') || 0),
+    rateLimitHits: Number(localStorage.getItem('chatdeck:rateLimitHits') || 0),
+    prefetchDisabledUntil: Number(localStorage.getItem('chatdeck:prefetchDisabledUntil') || 0),
+    adaptiveIntervals: { list: LIST_MIN_INTERVAL_MS, detail: DETAIL_MIN_INTERVAL_MS, mutate: MUTATION_MIN_INTERVAL_MS },
     queueTimer: null,
+    cacheReady: false,
+    cacheHits: 0,
     opened: false,
     working: false,
     expandedId: null,
@@ -143,6 +157,10 @@
       .previewItem.recent .previewText { opacity:.58; -webkit-line-clamp:1; }
       .card.expanded .preview, .card.expanded .loadingPreview { display:none; }
 
+      .waitingPreview { padding:3px 14px 14px 42px; height:98px; display:flex; flex-direction:column; justify-content:center; gap:8px; }
+      .waitingLine { font-size:11px; opacity:.52; display:flex; align-items:center; gap:7px; }
+      .waitingDot { width:7px; height:7px; border-radius:50%; background:currentColor; opacity:.28; }
+      .waitingHint { font-size:10.5px; line-height:1.45; opacity:.38; }
       .loadingPreview { padding:1px 14px 14px 42px; height:98px; }
       .loadingStatus { display:flex; align-items:center; gap:7px; font-size:11px; opacity:.58; margin-bottom:10px; }
       .spinner { width:13px; height:13px; border:1.5px solid rgba(127,127,127,.28); border-top-color:currentColor; border-radius:50%; animation:spin .75s linear infinite; opacity:.72; }
@@ -199,7 +217,7 @@
     <div class="overlay">
       <section class="panel">
         <header class="topbar">
-          <div class="brand"><b>Chat Deck</b><span>分批读取 · 速览预览 · 批量管理</span></div>
+          <div class="brand"><b>Chat Deck</b><span>分批读取 · 本地缓存 · 自适应限速</span></div>
           <input class="search" placeholder="搜索已加载的标题或正文…" />
           <button class="btn" data-act="selectVisible">选择当前</button>
           <button class="btn close" data-act="close" title="关闭">×</button>
@@ -315,26 +333,170 @@
     return Number.isNaN(date) ? fallbackMs : Math.max(1000, date - Date.now());
   }
 
-  function setRateLimit(ms) {
-    state.rateLimitHits += 1;
-    state.rateLimitUntil = Math.max(state.rateLimitUntil, Date.now() + ms);
-    progress.textContent = `请求过快，冷却 ${Math.ceil(ms / 1000)}s`;
-    showToast(`触发 429，已自动降速并等待 ${Math.ceil(ms / 1000)} 秒`);
+  function persistRateState() {
+    localStorage.setItem('chatdeck:rateLimitUntil', String(state.rateLimitUntil || 0));
+    localStorage.setItem('chatdeck:rateLimitHits', String(state.rateLimitHits || 0));
+    localStorage.setItem('chatdeck:prefetchDisabledUntil', String(state.prefetchDisabledUntil || 0));
   }
 
-  async function apiWith429Retry(path, options = {}, maxRetries = MAX_429_RETRIES) {
+  function setRateLimit(ms, kind = 'detail') {
+    state.rateLimitHits += 1;
+    state.rateLimitUntil = Math.max(state.rateLimitUntil, Date.now() + ms);
+    // Any 429 disables speculative/background reads for a long while. User-initiated hover reads still work after cooldown.
+    state.prefetchDisabledUntil = Math.max(state.prefetchDisabledUntil, Date.now() + PREFETCH_DISABLE_AFTER_429_MS);
+    const base = kind === 'list' ? LIST_MIN_INTERVAL_MS : kind === 'mutate' ? MUTATION_MIN_INTERVAL_MS : DETAIL_MIN_INTERVAL_MS;
+    state.adaptiveIntervals[kind] = Math.min(15000, Math.max(base, Math.round((state.adaptiveIntervals[kind] || base) * 1.7)));
+    persistRateState();
+    progress.textContent = `请求过快，安全冷却 ${Math.ceil(ms / 1000)}s`;
+    showToast(`触发 429：已暂停后台预读 30 分钟，并冷却 ${Math.ceil(ms / 1000)} 秒`);
+  }
+
+  function sharedNumber(key) {
+    const n = Number(localStorage.getItem(key) || 0);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  async function reserveRequestSlot(kind) {
+    const base = kind === 'list' ? LIST_MIN_INTERVAL_MS : kind === 'mutate' ? MUTATION_MIN_INTERVAL_MS : DETAIL_MIN_INTERVAL_MS;
+    const key = `chatdeck:last:${kind}`;
+    while (true) {
+      const reserve = async () => {
+        const now = Date.now();
+        const sharedCooldown = sharedNumber('chatdeck:rateLimitUntil');
+        state.rateLimitUntil = Math.max(state.rateLimitUntil, sharedCooldown);
+        const interval = Math.max(base, state.adaptiveIntervals[kind] || base);
+        const readyAt = Math.max(
+          state.rateLimitUntil,
+          sharedNumber(key) + interval,
+          sharedNumber('chatdeck:last:any') + GLOBAL_MIN_INTERVAL_MS
+        );
+        if (readyAt > now) return readyAt - now;
+        localStorage.setItem(key, String(now));
+        localStorage.setItem('chatdeck:last:any', String(now));
+        state.lastApiAt = now;
+        return 0;
+      };
+
+      let wait = 0;
+      if (navigator.locks?.request) {
+        wait = await navigator.locks.request('chatdeck-api-rate-slot', reserve);
+      } else {
+        wait = await reserve();
+      }
+      if (wait <= 0) return;
+      await sleep(wait + 30 + Math.floor(Math.random() * 220));
+    }
+  }
+
+  function relaxInterval(kind) {
+    const base = kind === 'list' ? LIST_MIN_INTERVAL_MS : kind === 'mutate' ? MUTATION_MIN_INTERVAL_MS : DETAIL_MIN_INTERVAL_MS;
+    const current = state.adaptiveIntervals[kind] || base;
+    state.adaptiveIntervals[kind] = Math.max(base, Math.round(current * 0.92));
+    if (state.rateLimitHits > 0 && Date.now() > state.rateLimitUntil + 30000) {
+      state.rateLimitHits -= 1;
+      persistRateState();
+    }
+  }
+
+  async function apiWith429Retry(path, options = {}, maxRetries = MAX_429_RETRIES, kind = 'detail') {
     let attempt = 0;
     while (true) {
-      const wait = state.rateLimitUntil - Date.now();
-      if (wait > 0) await sleep(wait);
+      await reserveRequestSlot(kind);
       const res = await api(path, options);
-      if (res.status !== 429 || attempt >= maxRetries) return res;
-      const fallback = Math.min(90000, 8000 * (2 ** attempt));
-      const delay = retryAfterMs(res, fallback) + Math.floor(Math.random() * 900);
-      setRateLimit(delay);
+      if (res.status !== 429) {
+        if (res.ok) relaxInterval(kind);
+        return res;
+      }
+
+      const fallback = Math.min(120000, 12000 * (2 ** Math.min(attempt + state.rateLimitHits, 3)));
+      const delay = retryAfterMs(res, fallback) + 500 + Math.floor(Math.random() * 1200);
+      setRateLimit(delay, kind);
+      if (attempt >= maxRetries) return res;
       attempt += 1;
       await sleep(delay);
     }
+  }
+
+  let cacheDbPromise = null;
+  function openCacheDb() {
+    if (cacheDbPromise) return cacheDbPromise;
+    cacheDbPromise = new Promise((resolve, reject) => {
+      try {
+        const req = indexedDB.open(CACHE_DB_NAME, 1);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains(CACHE_STORE)) db.createObjectStore(CACHE_STORE, { keyPath:'id' });
+        };
+        req.onsuccess = () => { state.cacheReady = true; resolve(req.result); };
+        req.onerror = () => reject(req.error);
+      } catch (e) { reject(e); }
+    }).catch(err => { console.warn('[Chat Deck] IndexedDB cache unavailable', err); return null; });
+    return cacheDbPromise;
+  }
+
+  async function cacheGet(id) {
+    const db = await openCacheDb();
+    if (!db) return null;
+    return new Promise(resolve => {
+      const tx = db.transaction(CACHE_STORE, 'readonly');
+      const req = tx.objectStore(CACHE_STORE).get(id);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => resolve(null);
+    });
+  }
+
+  async function cachePut(id, parsed, chat) {
+    const db = await openCacheDb();
+    if (!db || !parsed?.messages) return;
+    const value = {
+      id, messages: parsed.messages, createdAt: parsed.createdAt || getListCreatedAt(chat) || 0,
+      listUpdatedAt: getListUpdatedAt(chat), cachedAt: Date.now()
+    };
+    return new Promise(resolve => {
+      const tx = db.transaction(CACHE_STORE, 'readwrite');
+      tx.objectStore(CACHE_STORE).put(value);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
+    });
+  }
+
+  async function cacheDelete(id) {
+    const db = await openCacheDb();
+    if (!db) return;
+    return new Promise(resolve => {
+      const tx = db.transaction(CACHE_STORE, 'readwrite');
+      tx.objectStore(CACHE_STORE).delete(id);
+      tx.oncomplete = tx.onerror = tx.onabort = () => resolve();
+    });
+  }
+
+  function getListUpdatedAt(chat) {
+    return normalizeTimestamp(chat?.update_time ?? chat?.updateTime ?? chat?.updated_at ?? chat?.updatedAt);
+  }
+
+  function cacheIsFresh(cached, chat) {
+    if (!cached?.messages?.length) return false;
+    const listUpdatedAt = getListUpdatedAt(chat);
+    if (listUpdatedAt && cached.listUpdatedAt) return cached.listUpdatedAt + 1000 >= listUpdatedAt;
+    return Date.now() - Number(cached.cachedAt || 0) <= CACHE_SOFT_TTL_MS;
+  }
+
+  async function hydrateFromCache(chat) {
+    if (!chat?.id || state.details.has(chat.id)) return false;
+    const cached = await cacheGet(chat.id);
+    if (!cacheIsFresh(cached, chat)) return false;
+    state.details.set(chat.id, cached.messages);
+    if (cached.createdAt) state.createdTimes.set(chat.id, cached.createdAt);
+    state.cacheHits += 1;
+    return true;
+  }
+
+  async function hydrateBatchFromCache(items) {
+    await Promise.all(items.map(async chat => {
+      if (await hydrateFromCache(chat)) updateCardDetail(chat.id);
+    }));
+    updateStats();
   }
 
   async function loadNextBatch() {
@@ -344,7 +506,7 @@
     loadMoreBtn.textContent = '读取中…';
     try {
       const url = `/backend-api/conversations?offset=${state.offset}&limit=${BATCH_SIZE}&order=updated`;
-      const res = await apiWith429Retry(url, {}, 2);
+      const res = await apiWith429Retry(url, {}, 1, 'list');
       if (!res.ok) throw new Error(`列表读取失败 (${res.status})`);
       const data = await res.json();
       const items = Array.isArray(data?.items) ? data.items : [];
@@ -360,6 +522,7 @@
       state.offset += items.length;
       render();
       observeCards();
+      hydrateBatchFromCache(items).catch(() => {});
     } catch (err) {
       console.error('[Chat Deck]', err);
       showToast(err.message || '读取失败');
@@ -418,16 +581,36 @@
     return { messages, createdAt: explicitCreated || earliestMessage || 0 };
   }
 
-  function markCardLoading(chatId) {
+  function updateCardLoadState(chatId) {
     const card = grid.querySelector(`.card[data-id="${CSS.escape(chatId)}"]`);
-    if (!card || state.details.has(chatId)) return;
+    if (!card) return;
     const count = card.querySelector('.count');
-    if (count) count.textContent = '读取中…';
+    const surface = card.querySelector('.cardSurface');
+    const msgs = state.details.get(chatId);
+    const isLoading = state.loadingIds.has(chatId);
+    if (msgs) {
+      if (count) count.textContent = `${msgs.length} 条消息`;
+      return;
+    }
+    if (count) count.textContent = isLoading ? '正在读取…' : '正文未缓存';
+    const current = surface?.querySelector('.preview, .loadingPreview, .waitingPreview');
+    if (current && isLoading && !current.classList.contains('loadingPreview')) {
+      const tmp = document.createElement('div'); tmp.innerHTML = loadingPreviewHTML(); current.replaceWith(tmp.firstElementChild);
+    } else if (current && !isLoading && current.classList.contains('loadingPreview')) {
+      const tmp = document.createElement('div'); tmp.innerHTML = waitingPreviewHTML(chatId); current.replaceWith(tmp.firstElementChild);
+    }
+    if (card.classList.contains('expanded') && !msgs) setExpandedLoading(card, isLoading);
   }
 
-  function enqueueDetail(chatId, priority = false) {
+  async function enqueueDetail(chatId, priority = false) {
     if (state.details.has(chatId) || state.detailPromises.has(chatId)) return;
-    markCardLoading(chatId);
+
+    // Always consult persistent cache before creating a network job.
+    const chat = state.chats.find(c => c.id === chatId);
+    if (chat && await hydrateFromCache(chat)) {
+      updateCardDetail(chatId);
+      return;
+    }
 
     const existing = state.queue.findIndex(x => x.id === chatId);
     if (existing >= 0) {
@@ -436,14 +619,16 @@
         item.priority = true;
         state.queue.unshift(item);
       }
+      pumpQueue();
       return;
     }
 
     if (!priority) {
+      if (Date.now() < state.prefetchDisabledUntil || document.hidden || !state.opened) return;
       const backgroundCount = state.queue.filter(x => !x.priority).length;
       if (backgroundCount >= MAX_BACKGROUND_QUEUE) return;
     }
-    const item = { id: chatId, priority };
+    const item = { id: chatId, priority, queuedAt:Date.now() };
     priority ? state.queue.unshift(item) : state.queue.push(item);
     pumpQueue();
   }
@@ -452,44 +637,64 @@
     state.queue = state.queue.filter(x => x.id !== chatId || x.priority);
   }
 
+  function cancelQueuedPriority(chatId) {
+    if (state.detailPromises.has(chatId)) return;
+    state.queue = state.queue.filter(x => x.id !== chatId);
+    updateCardLoadState(chatId);
+  }
+
   function pumpQueue() {
     clearTimeout(state.queueTimer);
-    if (state.activeLoads >= DETAIL_CONCURRENCY || !state.queue.length) return;
+    if (state.activeLoads >= DETAIL_CONCURRENCY || !state.queue.length || !state.opened || document.hidden) return;
 
-    const cooldown = Math.max(0, state.rateLimitUntil - Date.now());
-    const spacing = Math.max(0, DETAIL_MIN_INTERVAL_MS - (Date.now() - state.lastDetailRequestAt));
-    const wait = Math.max(cooldown, spacing);
-    if (wait > 0) {
-      state.queueTimer = setTimeout(pumpQueue, wait + 20);
-      return;
+    const priorityIndex = state.queue.findIndex(x => x.priority);
+    const index = priorityIndex >= 0 ? priorityIndex : 0;
+    const item = state.queue[index];
+    const isBackground = !item.priority;
+
+    if (isBackground) {
+      if (Date.now() < state.prefetchDisabledUntil || state.expandedId) {
+        state.queue.splice(index, 1);
+        pumpQueue();
+        return;
+      }
+      const bgSpacing = BACKGROUND_DETAIL_INTERVAL_MS - (Date.now() - state.lastDetailRequestAt);
+      if (bgSpacing > 0) {
+        state.queueTimer = setTimeout(pumpQueue, bgSpacing + 50);
+        return;
+      }
     }
 
-    const item = state.queue.shift();
+    state.queue.splice(index, 1);
     const id = item.id;
+    const chat = state.chats.find(c => c.id === id);
     state.activeLoads++;
-    state.lastDetailRequestAt = Date.now();
+    state.loadingIds.add(id);
+    updateCardLoadState(id);
+
     const p = (async () => {
       try {
-        const res = await api(`/backend-api/conversation/${encodeURIComponent(id)}`);
+        const res = await apiWith429Retry(`/backend-api/conversation/${encodeURIComponent(id)}`, {}, item.priority ? 2 : 0, 'detail');
+        state.lastDetailRequestAt = Date.now();
         if (res.status === 429) {
-          const fallback = Math.min(90000, 9000 * (2 ** Math.min(state.rateLimitHits, 3)));
-          const delay = retryAfterMs(res, fallback) + Math.floor(Math.random() * 1000);
-          setRateLimit(delay);
-          state.queue.unshift({ id, priority:true });
+          state.detailErrors.set(id, '429：服务器正在限流，已进入安全冷却');
           return;
         }
         if (!res.ok) throw new Error(`正文读取失败 (${res.status})`);
         const data = await res.json();
         const parsed = parseConversation(data);
         state.details.set(id, parsed.messages);
+        state.detailErrors.delete(id);
         if (parsed.createdAt) state.createdTimes.set(id, parsed.createdAt);
-        state.rateLimitHits = Math.max(0, state.rateLimitHits - 1);
+        await cachePut(id, parsed, chat);
       } catch (e) {
-        state.details.set(id, [{ role:'assistant', text:`[无法读取：${e.message}]`, time:0 }]);
+        state.detailErrors.set(id, e?.message || '读取失败');
       } finally {
         state.detailPromises.delete(id);
+        state.loadingIds.delete(id);
         state.activeLoads--;
-        updateCardDetail(id);
+        if (state.details.has(id)) updateCardDetail(id);
+        else updateCardLoadState(id);
         pumpQueue();
       }
     })();
@@ -523,6 +728,26 @@
     };
   }
 
+  function waitingPreviewHTML(id) {
+    const err = state.detailErrors.get(id);
+    return `<div class="waitingPreview">
+      <div class="waitingLine"><span class="waitingDot"></span><span>${escapeAttr(err || '悬停 0.5 秒展开并读取对话')}</span></div>
+      <div class="waitingHint">未缓存的正文不会批量高速请求；后台只会极低速预读少量可见卡片。</div>
+    </div>`;
+  }
+
+  function setExpandedLoading(card, active = false) {
+    const digest = card?.querySelector('.digest');
+    const messages = card?.querySelector('.messages');
+    if (!digest || !messages) return;
+    const id = card.dataset.id;
+    const err = state.detailErrors.get(id);
+    digest.innerHTML = `<div class="digestHead"><b>对话速览</b><span>${active ? '安全限速读取中' : '等待读取'}</span></div>
+      <div class="loadingStatus" style="margin-top:14px">${active ? '<span class="spinner"></span>' : '<span class="waitingDot"></span>'}<span>${escapeAttr(err || (active ? '正在读取并写入本地缓存…' : '即将读取；已缓存的对话以后会直接打开'))}</span></div>
+      <div class="skeleton s1"></div><div class="skeleton s2"></div><div class="skeleton s3"></div>`;
+    messages.innerHTML = `<div class="moreHint">为降低 429 风险，同一时间只读取一个正文；任何 429 都会自动暂停后台预读。</div>`;
+  }
+
   function loadingPreviewHTML() {
     return `<div class="loadingPreview">
       <div class="loadingStatus"><span class="spinner"></span><span>正在读取对话正文与创建时间…</span></div>
@@ -551,7 +776,7 @@
       const selected = state.selected.has(c.id);
       const msgs = state.details.get(c.id);
       const createdAt = getCreatedAt(c);
-      const count = msgs ? `${msgs.length} 条消息` : '读取中…';
+      const count = msgs ? `${msgs.length} 条消息` : (state.loadingIds.has(c.id) ? '正在读取…' : '正文未缓存');
       return `<article class="card ${selected ? 'selected' : ''}" data-id="${escapeAttr(c.id)}">
         <div class="cardSurface">
           <div class="cardHead">
@@ -562,7 +787,7 @@
             </div>
             <button class="mini" data-act="singleDelete" title="删除">×</button>
           </div>
-          ${msgs ? previewHTML(msgs) : loadingPreviewHTML()}
+          ${msgs ? previewHTML(msgs) : (state.loadingIds.has(c.id) ? loadingPreviewHTML() : waitingPreviewHTML(c.id))}
           <div class="expandedBody"><div class="digest"></div><div class="messages"></div></div>
           <div class="fade"></div>
         </div>
@@ -579,7 +804,7 @@
     if (!msgs) return;
     const chat = state.chats.find(c => c.id === id);
     const surface = card.querySelector('.cardSurface');
-    const oldPreview = surface.querySelector('.preview, .loadingPreview');
+    const oldPreview = surface.querySelector('.preview, .loadingPreview, .waitingPreview');
     const temp = document.createElement('div');
     temp.innerHTML = previewHTML(msgs);
     oldPreview?.replaceWith(temp.firstElementChild);
@@ -646,16 +871,21 @@
     observer = new IntersectionObserver((entries) => {
       for (const e of entries) {
         const id = e.target.dataset.id;
-        if (e.isIntersecting) enqueueDetail(id, false);
-        else removeBackgroundQueued(id);
+        if (e.isIntersecting) {
+          // Only a tiny low-speed queue is allowed. Cache is checked first and costs no network request.
+          enqueueDetail(id, false);
+        } else {
+          removeBackgroundQueued(id);
+        }
       }
-    }, { root: content, rootMargin:'40px', threshold:.08 });
+    }, { root: content, rootMargin:'0px', threshold:.60 });
     grid.querySelectorAll('.card').forEach(card => observer.observe(card));
   }
 
   function updateStats() {
     const visible = filteredChats().length;
-    stats.textContent = `已读取 ${state.chats.length}${state.total ? ` / ${state.total}` : ''} · 当前 ${visible} · 已选 ${state.selected.size}`;
+    const safe = Date.now() < state.prefetchDisabledUntil ? '后台预读已暂停' : '安全预读';
+    stats.textContent = `列表 ${state.chats.length}${state.total ? ` / ${state.total}` : ''} · 当前 ${visible} · 缓存命中 ${state.cacheHits} · ${safe} · 已选 ${state.selected.size}`;
     archiveBtn.disabled = deleteBtn.disabled = state.selected.size === 0 || state.working;
   }
 
@@ -683,6 +913,7 @@
     card.classList.add('expanded');
     panel.classList.add('hasExpanded');
     state.expandedId = id;
+    if (!state.details.has(id)) setExpandedLoading(card, state.loadingIds.has(id));
     enqueueDetail(id, true);
   }
 
@@ -691,8 +922,10 @@
     clearTimeout(state.collapseTimer);
     const run = () => {
       if (state.expandedId) {
-        const card = grid.querySelector(`.card[data-id="${CSS.escape(state.expandedId)}"]`);
+        const id = state.expandedId;
+        const card = grid.querySelector(`.card[data-id="${CSS.escape(id)}"]`);
         card?.classList.remove('expanded');
+        cancelQueuedPriority(id);
       }
       state.expandedId = null;
       panel.classList.remove('hasExpanded');
@@ -702,7 +935,7 @@
   }
 
   async function patchConversation(id, body) {
-    const res = await apiWith429Retry(`/backend-api/conversation/${encodeURIComponent(id)}`, { method:'PATCH', body:JSON.stringify(body) });
+    const res = await apiWith429Retry(`/backend-api/conversation/${encodeURIComponent(id)}`, { method:'PATCH', body:JSON.stringify(body) }, 2, 'mutate');
     if (!res.ok) throw new Error(`操作失败 (${res.status})`);
   }
 
@@ -728,13 +961,15 @@
           state.chats = state.chats.filter(c => c.id !== id);
           state.details.delete(id);
           state.createdTimes.delete(id);
+          state.detailErrors.delete(id);
+          cacheDelete(id).catch(() => {});
           render(); observeCards();
         }, 260);
       } catch (e) {
         failed++;
         console.error('[Chat Deck]', id, e);
       }
-      if (i < ids.length - 1) await new Promise(r => setTimeout(r, DELETE_DELAY_MS));
+      // No fixed burst loop: the global mutation scheduler reserves a safe cross-tab slot for every request.
     }
     state.working = false;
     progress.textContent = failed ? `完成 ${ok}，失败 ${failed}` : `完成 ${ok}`;
@@ -808,11 +1043,21 @@
     render(); observeCards();
   });
 
+  let scrollLoadTimer = null;
   content.addEventListener('scroll', () => {
     if (state.expandedId) collapseExpanded(true);
+    clearTimeout(scrollLoadTimer);
     if (state.loadingList || !state.total || state.offset >= state.total) return;
-    if (content.scrollTop + content.clientHeight > content.scrollHeight - 700) loadNextBatch();
+    if (content.scrollTop + content.clientHeight > content.scrollHeight - 520) {
+      scrollLoadTimer = setTimeout(() => loadNextBatch(), 650);
+    }
   }, { passive:true });
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && state.opened) pumpQueue();
+  });
+
+  openCacheDb().catch(() => {});
 
   document.addEventListener('keydown', (e) => {
     if ((e.altKey || e.metaKey) && e.key.toLowerCase() === 'm') {
