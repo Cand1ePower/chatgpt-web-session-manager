@@ -71,6 +71,7 @@
     pendingFastChoice: false,
     pendingFastLoad: false,
     fastConfirmedForSession: false,
+    autoExpand: localStorage.getItem('chatdeck:autoExpand') !== '0',
     imageUrlCache: new Map(),
     imagePromises: new Map(),
   };
@@ -128,6 +129,26 @@
       .btn.danger:hover { background:rgba(220,38,38,.16); }
       .btn:disabled { opacity:.42; cursor:not-allowed; transform:none; }
       .close { width:40px; padding:0; font-size:19px; }
+      .modeToggle {
+        height:40px; padding:0 10px 0 12px; border:0; border-radius:12px; cursor:pointer; color:inherit;
+        background:rgba(127,127,127,.085); box-shadow:inset 0 0 0 1px rgba(127,127,127,.10);
+        display:flex; align-items:center; gap:9px; white-space:nowrap; transition:background .18s ease, box-shadow .18s ease, transform .18s ease;
+      }
+      .modeToggle:hover { background:rgba(127,127,127,.15); transform:translateY(-1px); }
+      .modeToggle .modeLabel { font-size:11.5px; font-weight:650; opacity:.72; }
+      .modeSwitch {
+        width:34px; height:20px; border-radius:999px; padding:2px; position:relative; flex:0 0 auto;
+        background:rgba(127,127,127,.22); box-shadow:inset 0 0 0 1px rgba(127,127,127,.15);
+        transition:background .22s ease, box-shadow .22s ease;
+      }
+      .modeSwitch::after {
+        content:""; display:block; width:16px; height:16px; border-radius:50%; background:rgba(255,255,255,.92);
+        box-shadow:0 1px 4px rgba(0,0,0,.20); transform:translateX(0);
+        transition:transform .25s cubic-bezier(.16,1,.3,1), background .18s ease;
+      }
+      .modeToggle.active .modeSwitch { background:rgba(82,125,255,.72); box-shadow:inset 0 0 0 1px rgba(82,125,255,.34), 0 0 0 3px rgba(82,125,255,.07); }
+      .modeToggle.active .modeSwitch::after { transform:translateX(14px); }
+      @media (prefers-color-scheme: dark) { .modeSwitch::after { background:#f5f5f6; } }
 
 
       .rateBanner {
@@ -271,8 +292,8 @@
       .contentState.loading i { opacity:.85; animation:statePulse .78s ease-in-out infinite alternate; }
       .metaSep.hidden, .count.hidden { display:none; }
       @keyframes statePulse { from { transform:scale(.72); opacity:.38 } to { transform:scale(1.2); opacity:1 } }
-      .mini { border:0; background:transparent; color:inherit; width:26px; height:26px; border-radius:8px; cursor:pointer; opacity:.55; }
-      .mini:hover { background:rgba(127,127,127,.12); opacity:1; }
+      .mini { border:0; background:transparent; color:inherit; width:32px; height:32px; border-radius:10px; cursor:pointer; opacity:.62; transition:background .16s ease, opacity .16s ease, transform .16s cubic-bezier(.2,.8,.2,1); }
+      .mini:hover { background:rgba(127,127,127,.12); opacity:1; transform:translateY(-1px) scale(1.035); }
 
       .preview { padding:0 14px 13px 42px; height:98px; overflow:hidden; transition:opacity .13s ease, transform .18s cubic-bezier(.16,1,.3,1); }
       .previewItem { display:grid; grid-template-columns:34px 1fr; gap:7px; align-items:start; margin-bottom:7px; }
@@ -438,9 +459,9 @@
       @media (prefers-color-scheme: dark) { .check:checked + .checkBox { --check-ink:#171719; background:#f0f0f2; border-color:#f0f0f2; } }
       .check:focus-visible + .checkBox { outline:2px solid currentColor; outline-offset:2px; }
 
-      .cardActions { display:flex; gap:2px; align-items:center; }
+      .cardActions { display:flex; gap:3px; align-items:center; margin-top:-3px; margin-right:-3px; }
       .mini { display:grid; place-items:center; }
-      .mini svg { width:14px; height:14px; stroke:currentColor; fill:none; stroke-width:1.75; stroke-linecap:round; stroke-linejoin:round; }
+      .mini svg { width:16.5px; height:16.5px; stroke:currentColor; fill:none; stroke-width:1.75; stroke-linecap:round; stroke-linejoin:round; }
       .mini.jump:hover { background:rgba(80,110,180,.12); }
       .mini.trash:hover { background:rgba(220,38,38,.12); color:#c92b2b; }
 
@@ -536,6 +557,7 @@
         <header class="topbar">
           <div class="brand"><b>Chat Deck</b><span>分批读取 · 本地缓存 · 手动按需加载</span></div>
           <input class="search" placeholder="搜索已加载的标题或正文…" />
+          <button class="modeToggle" data-act="toggleAutoExpand" type="button" aria-pressed="true" title="切换卡片展开方式"><span class="modeLabel">自动展开</span><span class="modeSwitch" aria-hidden="true"></span></button>
           <button class="btn" data-act="selectVisible">选择当前</button>
           <button class="btn close" data-act="close" title="关闭">×</button>
         </header>
@@ -612,12 +634,42 @@
   const rateDetail = $('.rateDetail');
   const archiveBtn = $('[data-act="archive"]');
   const deleteBtn = $('[data-act="delete"]');
+  const autoExpandBtn = $('[data-act="toggleAutoExpand"]');
 
   function showToast(text) {
     toast.textContent = text;
     toast.classList.add('show');
     clearTimeout(showToast.t);
     showToast.t = setTimeout(() => toast.classList.remove('show'), 1800);
+  }
+
+  function updateAutoExpandUI() {
+    if (!autoExpandBtn) return;
+    autoExpandBtn.classList.toggle('active', state.autoExpand);
+    autoExpandBtn.setAttribute('aria-pressed', state.autoExpand ? 'true' : 'false');
+    autoExpandBtn.title = state.autoExpand
+      ? '自动展开已开启：悬停 0.5 秒展开，移出后收起'
+      : '自动展开已关闭：点击卡片展开，点击卡片外区域收起';
+  }
+
+  function setAutoExpand(enabled) {
+    state.autoExpand = !!enabled;
+    localStorage.setItem('chatdeck:autoExpand', state.autoExpand ? '1' : '0');
+    clearTimeout(state.hoverTimer);
+    clearTimeout(state.collapseTimer);
+    updateAutoExpandUI();
+    showToast(state.autoExpand ? '自动展开已开启' : '已切换为点击展开');
+  }
+
+  function openConversationTab(id) {
+    const a = document.createElement('a');
+    a.href = `${location.origin}/c/${encodeURIComponent(id)}`;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.style.display = 'none';
+    root.appendChild(a);
+    a.click();
+    a.remove();
   }
 
   async function getToken() {
@@ -1656,7 +1708,7 @@
               <div class="meta"><span class="createdAt" title="${escapeAttr(formatDateMs(createdAt, true))}">创建 ${escapeAttr(formatDateMs(createdAt))}</span><span class="metaSep ${metaHidden}">·</span><span class="count ${metaHidden}">${count}</span><span class="contentState ${loadState.cls}">${chipHtml}</span></div>
             </div>
             <div class="cardActions">
-              <button class="mini jump" data-act="openConversation" title="弹窗查看原对话" aria-label="弹窗查看原对话"><svg viewBox="0 0 20 20"><path d="M8 4H5.5A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16h9a1.5 1.5 0 0 0 1.5-1.5V12"/><path d="M11 4h5v5M16 4l-7 7"/></svg></button>
+              <button class="mini jump" data-act="openConversation" title="在新标签页打开原对话" aria-label="在新标签页打开原对话"><svg viewBox="0 0 20 20"><path d="M8 4H5.5A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16h9a1.5 1.5 0 0 0 1.5-1.5V12"/><path d="M11 4h5v5M16 4l-7 7"/></svg></button>
               <button class="mini trash" data-act="singleDelete" title="删除" aria-label="删除对话"><svg viewBox="0 0 20 20"><path d="M4 6h12M8 3.5h4M6.3 6l.55 10h6.3l.55-10M8.4 8.5v5M11.6 8.5v5"/></svg></button>
             </div>
           </div>
@@ -2070,6 +2122,7 @@
       return;
     }
     if (act === 'close') { collapseExpanded(true); state.opened = false; overlay.classList.remove('open'); return; }
+    if (act === 'toggleAutoExpand') { setAutoExpand(!state.autoExpand); return; }
     if (act === 'loadMore') { loadNextBatch(); return; }
     if (act === 'toggleCountMenu') { if (!countToggle.disabled) setCountMenu(!state.countMenuOpen); return; }
     if (act === 'toggleSpeedMenu') { setSpeedMenu(!state.speedMenuOpen); return; }
@@ -2109,23 +2162,27 @@
     }
     if (act === 'openConversation') {
       clearTimeout(state.hoverTimer);
-      const w = Math.min(1180, Math.max(900, Math.round(screen.availWidth * .72)));
-      const h = Math.min(900, Math.max(700, Math.round(screen.availHeight * .82)));
-      const left = Math.max(0, Math.round((screen.availWidth - w) / 2));
-      const top = Math.max(0, Math.round((screen.availHeight - h) / 2));
-      window.open(`/c/${encodeURIComponent(id)}`, `chatdeck-${id}`, `popup=yes,width=${w},height=${h},left=${left},top=${top},resizable=yes,scrollbars=yes`);
+      openConversationTab(id);
       return;
     }
     if (act === 'singleDelete') { batchAction('delete', [id]); return; }
+
+    // Manual mode: only a click on the non-interactive card surface expands it.
+    // Buttons, checkbox controls and links retain their own behavior.
+    if (!state.autoExpand && !card.classList.contains('expanded') && !e.target.closest('button, input, label, a, .mediaTile')) {
+      expandCard(card);
+      return;
+    }
   });
 
   root.addEventListener('dblclick', (e) => {
     const title = e.target.closest('.title');
     const card = e.target.closest('.card');
-    if (title && card?.dataset.id) window.open(`/c/${encodeURIComponent(card.dataset.id)}`, '_blank', 'noopener');
+    if (title && card?.dataset.id) openConversationTab(card.dataset.id);
   });
 
   root.addEventListener('pointerover', (e) => {
+    if (!state.autoExpand) return;
     const card = e.target.closest('.card');
     if (!card) return;
     if (e.relatedTarget && card.contains(e.relatedTarget)) return;
@@ -2135,6 +2192,7 @@
   });
 
   root.addEventListener('pointerout', (e) => {
+    if (!state.autoExpand) return;
     const card = e.target.closest('.card');
     if (!card) return;
     if (e.relatedTarget && card.contains(e.relatedTarget)) return;
@@ -2142,11 +2200,19 @@
     if (state.expandedId === card.dataset.id) collapseExpanded(false);
   });
 
+  updateAutoExpandUI();
   setCountChoice(state.loadCountChoice);
   applySpeedChoice(LOAD_SPEEDS[state.loadSpeedChoice] ? state.loadSpeedChoice : 'slow');
 
   root.addEventListener('pointerdown', (e) => {
     if (state.countMenuOpen && !e.target.closest('.loadCombo')) setCountMenu(false);
+    if (!state.autoExpand && state.expandedId) {
+      const expandedCard = root.querySelector(`.card[data-id="${CSS.escape(state.expandedId)}"]`);
+      const clickedCard = e.target.closest('.card');
+      // A click on another card is handled by the click-to-expand path, which performs a clean
+      // one-step switch. Any other click outside the expanded card collapses it.
+      if (expandedCard && !expandedCard.contains(e.target) && !clickedCard) collapseExpanded(false);
+    }
   });
 
   search.addEventListener('input', () => {
@@ -2156,7 +2222,7 @@
 
   let scrollLoadTimer = null;
   content.addEventListener('scroll', () => {
-    if (state.expandedId) collapseExpanded(true);
+    if (state.expandedId && state.autoExpand) collapseExpanded(true);
     clearTimeout(scrollLoadTimer);
     // Detail loading and list pagination are separate lanes. A long “加载 N 个” job must not freeze infinite scrolling.
     if (state.loadingList || !state.total || state.offset >= state.total) return;
