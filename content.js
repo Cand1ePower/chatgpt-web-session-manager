@@ -50,6 +50,7 @@
     expandedId: null,
     hoverTimer: null,
     collapseTimer: null,
+    morphAnimation: null,
     lastManualRequestAt: 0,
     manualLoading: false,
     manualPendingIds: new Set(),
@@ -151,23 +152,29 @@
         transform-origin:center center; z-index:1;
       }
       @media (prefers-color-scheme: dark) { .cardSurface { background:#202022; border-color:rgba(255,255,255,.09); box-shadow:none; } }
-      .card.morphing, .card.expanded { z-index:50; }
-      .card.morphing .cardSurface, .card.expanded .cardSurface {
+      .card.morphing, .card.expanded, .card.collapsing { z-index:50; }
+      .card.morphing .cardSurface, .card.expanded .cardSurface, .card.collapsing .cardSurface {
         position:fixed; inset:auto; z-index:60;
-        will-change:left, top, width, height, border-radius, box-shadow;
-        transition:
-          left .52s cubic-bezier(.16,1,.3,1),
-          top .52s cubic-bezier(.16,1,.3,1),
-          width .52s cubic-bezier(.16,1,.3,1),
-          height .52s cubic-bezier(.16,1,.3,1),
-          border-radius .46s cubic-bezier(.16,1,.3,1),
-          box-shadow .30s ease,
-          border-color .24s ease;
+        transform-origin:0 0;
+        backface-visibility:hidden;
+        -webkit-font-smoothing:antialiased;
+        will-change:transform;
+        /* Geometry is never transitioned with left/top/width/height.
+           A compositor-only FLIP transform keeps the first pixel exactly on the hovered card. */
+        transition:box-shadow .24s ease, border-color .20s ease, border-radius .24s ease;
       }
-      .card.expanded .cardSurface {
+      .card.expanded .cardSurface, .card.collapsing .cardSurface {
         border-radius:22px;
         box-shadow:0 30px 90px rgba(0,0,0,.34), 0 0 0 1px rgba(127,127,127,.14);
         border-color:rgba(127,127,127,.30);
+      }
+      .card.animating .expandedBody {
+        opacity:0 !important; transform:translateY(7px) scale(.995) !important;
+        pointer-events:none !important; transition:none !important;
+      }
+      .card.collapsing .expandedBody {
+        opacity:0 !important; transform:translateY(6px) scale(.995) !important;
+        pointer-events:none !important; transition:opacity .11s ease, transform .14s ease !important;
       }
       .card.selected .cardSurface { outline:2px solid currentColor; outline-offset:1px; }
       .card.deleted .cardSurface { opacity:.25; transform:scale(.97); pointer-events:none; }
@@ -1116,21 +1123,53 @@
   }
 
   function setSurfaceRect(surface, rect) {
-    surface.style.left = `${Math.round(rect.left)}px`;
-    surface.style.top = `${Math.round(rect.top)}px`;
-    surface.style.width = `${Math.round(rect.width)}px`;
-    surface.style.height = `${Math.round(rect.height)}px`;
+    surface.style.left = `${rect.left}px`;
+    surface.style.top = `${rect.top}px`;
+    surface.style.width = `${rect.width}px`;
+    surface.style.height = `${rect.height}px`;
+  }
+
+  function rectToTransform(fromRect, layoutRect) {
+    const sx = Math.max(.0001, fromRect.width / layoutRect.width);
+    const sy = Math.max(.0001, fromRect.height / layoutRect.height);
+    const dx = fromRect.left - layoutRect.left;
+    const dy = fromRect.top - layoutRect.top;
+    return `translate3d(${dx}px, ${dy}px, 0) scale(${sx}, ${sy})`;
+  }
+
+  function cancelMorphAnimation() {
+    const anim = state.morphAnimation;
+    state.morphAnimation = null;
+    if (!anim) return;
+    try { anim.cancel(); } catch (_) {}
+  }
+
+  // Freeze the current *visual* pixels before reversing direction. This is important when
+  // a mouse-leave happens while the opening animation is still in flight.
+  function freezeSurfaceAtCurrentPixels(surface) {
+    const visualRect = surface.getBoundingClientRect();
+    cancelMorphAnimation();
+    surface.style.transition = 'none';
+    surface.style.transform = 'none';
+    setSurfaceRect(surface, visualRect);
+    void surface.offsetWidth;
+    surface.style.removeProperty('transition');
+    return visualRect;
   }
 
   function clearMorphStyles(card) {
     if (!card) return;
     const surface = card.querySelector('.cardSurface');
-    card.classList.remove('expanded', 'morphing');
+    cancelMorphAnimation();
+    card.classList.remove('expanded', 'morphing', 'animating', 'collapsing');
     if (surface) {
       surface.style.removeProperty('left');
       surface.style.removeProperty('top');
       surface.style.removeProperty('width');
       surface.style.removeProperty('height');
+      surface.style.removeProperty('transform');
+      surface.style.removeProperty('transform-origin');
+      surface.style.removeProperty('transition');
     }
   }
 
@@ -1138,14 +1177,13 @@
     if (!card?.isConnected) return;
     clearTimeout(state.collapseTimer);
     const id = card.dataset.id;
-    if (state.expandedId === id && card.classList.contains('expanded')) return;
+    if (state.expandedId === id && card.classList.contains('expanded') && !card.classList.contains('collapsing')) return;
     if (state.expandedId && state.expandedId !== id) collapseExpanded(true);
 
     const surface = card.querySelector('.cardSurface');
     if (!surface) return;
 
-    // FLIP-style morph: promote the surface to fixed positioning at the exact pixels
-    // where the hovered card currently sits, then animate those same edges outward.
+    // Measure the untouched card first. No fixed-position class exists at this point.
     const startRect = surface.getBoundingClientRect();
     const contentRect = content.getBoundingClientRect();
     const gap = 12;
@@ -1156,20 +1194,52 @@
     let top = startRect.top - (targetHeight - startRect.height) / 2;
     left = Math.max(contentRect.left + 10, Math.min(left, contentRect.right - targetWidth - 10));
     top = Math.max(contentRect.top + 10, Math.min(top, contentRect.bottom - targetHeight - 10));
+    const targetRect = { left, top, width: targetWidth, height: targetHeight };
 
-    card.classList.add('morphing');
-    setSurfaceRect(surface, startRect);
+    cancelMorphAnimation();
+    card.classList.remove('collapsing');
+    card.classList.add('morphing', 'expanded', 'animating');
     panel.classList.add('hasExpanded');
     state.expandedId = id;
 
-    // Force the promoted card's first frame to be identical to the original card.
-    // The next animation frame changes only geometry, so it visibly grows from the hovered card.
+    // Canonical FLIP: lay the real surface out at its FINAL rect with transitions disabled,
+    // then visually invert it back onto the exact hovered card using only transform.
+    // This avoids the old auto/0,0 -> startRect transition that looked like a top-left fly-in.
+    surface.style.transition = 'none';
+    surface.style.transformOrigin = '0 0';
+    setSurfaceRect(surface, targetRect);
+    const inverted = rectToTransform(startRect, targetRect);
+    surface.style.transform = inverted;
     void surface.offsetWidth;
-    requestAnimationFrame(() => {
-      if (!card.isConnected || state.expandedId !== id) return;
-      card.classList.add('expanded');
-      setSurfaceRect(surface, { left, top, width: targetWidth, height: targetHeight });
-    });
+    surface.style.removeProperty('transition');
+
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduced || typeof surface.animate !== 'function') {
+      surface.style.transform = 'none';
+      card.classList.remove('animating');
+    } else {
+      const anim = surface.animate(
+        [
+          { transform: inverted },
+          { transform: 'translate3d(0,0,0) scale(1,1)' }
+        ],
+        {
+          duration: 500,
+          easing: 'cubic-bezier(.16,1,.3,1)',
+          fill: 'both'
+        }
+      );
+      state.morphAnimation = anim;
+      anim.finished.then(() => {
+        if (state.morphAnimation !== anim) return;
+        state.morphAnimation = null;
+        surface.style.transform = 'none';
+        try { anim.cancel(); } catch (_) {}
+        if (card.isConnected && state.expandedId === id && !card.classList.contains('collapsing')) {
+          card.classList.remove('animating');
+        }
+      }).catch(() => {});
+    }
 
     if (!state.details.has(id)) setExpandedLoading(card, state.loadingIds.has(id));
     enqueueDetail(id, 'hover');
@@ -1200,24 +1270,46 @@
 
     state.collapseTimer = setTimeout(() => {
       if (!card.isConnected || state.expandedId !== id) return;
-      const homeRect = card.getBoundingClientRect();
-      card.classList.remove('expanded');
-      // Keep .morphing so position:fixed remains active while the card shrinks back
-      // into its exact grid placeholder instead of snapping to it.
-      requestAnimationFrame(() => setSurfaceRect(surface, homeRect));
 
-      let done = false;
-      const cleanup = () => {
-        if (done) return;
-        done = true;
-        surface.removeEventListener('transitionend', onEnd);
+      // Read the placeholder while it is still untouched in the grid.
+      const homeRect = card.getBoundingClientRect();
+      // Capture the exact current pixels (even midway through opening), then animate only transform.
+      const currentRect = freezeSurfaceAtCurrentPixels(surface);
+      card.classList.remove('animating');
+      card.classList.add('collapsing');
+
+      const endTransform = rectToTransform(homeRect, currentRect);
+      const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+      if (reduced || typeof surface.animate !== 'function') {
         finish();
-      };
-      const onEnd = (ev) => {
-        if (ev.target === surface && ['left','top','width','height'].includes(ev.propertyName)) cleanup();
-      };
-      surface.addEventListener('transitionend', onEnd);
-      setTimeout(cleanup, 620);
+        return;
+      }
+
+      const anim = surface.animate(
+        [
+          { transform: 'translate3d(0,0,0) scale(1,1)' },
+          { transform: endTransform }
+        ],
+        {
+          duration: 360,
+          easing: 'cubic-bezier(.22,.61,.36,1)',
+          fill: 'both'
+        }
+      );
+      state.morphAnimation = anim;
+      anim.finished.then(() => {
+        if (state.morphAnimation !== anim) return;
+        state.morphAnimation = null;
+        // The placeholder and transformed surface are now pixel-aligned; restoring absolute
+        // positioning happens after the animation, so there is no layout-transition stutter.
+        try { anim.cancel(); } catch (_) {}
+        finish();
+      }).catch(() => {});
+
+      // Safety cleanup if transition events/WAAPI completion are interrupted by the page.
+      setTimeout(() => {
+        if (state.expandedId === id && card.classList.contains('collapsing')) finish();
+      }, 520);
     }, HOVER_COLLAPSE_DELAY_MS);
   }
 
