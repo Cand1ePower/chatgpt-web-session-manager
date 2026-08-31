@@ -215,7 +215,8 @@
         opacity:0 !important; transform:translateY(6px) scale(.995) !important;
         pointer-events:none !important; transition:opacity .11s ease, transform .14s ease !important;
       }
-      /* Selected cards use a low-saturation rainbow rim that rotates clockwise around the card. */
+      /* Selected cards: continuous clockwise rainbow rim. Only the hue angle moves;
+         opacity, glow and shadow stay constant so there is no breathing/fading cycle. */
       @property --selected-rim-angle {
         syntax: "<angle>";
         inherits: false;
@@ -223,56 +224,73 @@
       }
       .card.selected .cardSurface {
         outline:none;
-        border-color:rgba(96,96,104,.34);
-        box-shadow:0 8px 28px rgba(0,0,0,.09), inset 0 0 0 1px rgba(255,255,255,.30);
+        border-color:rgba(112,118,132,.42);
+        /* Constant, very subtle halo. Never animated. */
+        box-shadow:
+          0 8px 28px rgba(0,0,0,.09),
+          0 0 0 1px rgba(255,255,255,.28) inset,
+          0 0 7px rgba(150,170,205,.12),
+          0 0 14px rgba(196,150,184,.055);
       }
       .card.selected .cardSurface::before {
         content:""; position:absolute; inset:-1px; border-radius:inherit; padding:2px; pointer-events:none; z-index:8;
         background:conic-gradient(from var(--selected-rim-angle),
-          hsl(350 34% 64%) 0deg,
-          hsl(20 34% 66%) 38deg,
-          hsl(48 31% 67%) 78deg,
-          hsl(86 27% 64%) 116deg,
-          hsl(145 27% 62%) 158deg,
-          hsl(186 30% 64%) 200deg,
-          hsl(220 31% 67%) 240deg,
-          hsl(260 29% 69%) 278deg,
-          hsl(306 29% 67%) 320deg,
-          hsl(350 34% 64%) 360deg);
+          hsl(350 47% 64%) 0deg,
+          hsl(18 48% 65%) 38deg,
+          hsl(47 45% 66%) 78deg,
+          hsl(86 40% 63%) 116deg,
+          hsl(145 41% 61%) 158deg,
+          hsl(185 44% 63%) 200deg,
+          hsl(220 45% 66%) 240deg,
+          hsl(260 43% 68%) 278deg,
+          hsl(306 44% 66%) 320deg,
+          hsl(350 47% 64%) 360deg);
         -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
         -webkit-mask-composite:xor; mask-composite:exclude;
-        animation:selectedRimSpin 3.6s linear infinite;
-        opacity:.92;
-        filter:saturate(.82) contrast(1.025);
+        animation:selectedRimSpin 3.35s linear infinite;
+        animation-play-state:running;
+        animation-fill-mode:both;
+        opacity:1;
+        transition:none;
+        filter:saturate(1.02) contrast(1.035) brightness(1.015)
+               drop-shadow(0 0 2.2px rgba(174,184,218,.17));
         will-change:background;
       }
       @keyframes selectedRimSpin {
-        to { --selected-rim-angle:360deg; }
+        0%   { --selected-rim-angle:0deg; opacity:1; }
+        25%  { --selected-rim-angle:90deg; opacity:1; }
+        50%  { --selected-rim-angle:180deg; opacity:1; }
+        75%  { --selected-rim-angle:270deg; opacity:1; }
+        100% { --selected-rim-angle:360deg; opacity:1; }
       }
       @media (prefers-color-scheme: dark) {
         .card.selected .cardSurface {
-          border-color:rgba(255,255,255,.28);
-          box-shadow:0 9px 30px rgba(0,0,0,.26), inset 0 0 0 1px rgba(255,255,255,.08);
+          border-color:rgba(255,255,255,.30);
+          box-shadow:
+            0 9px 30px rgba(0,0,0,.26),
+            0 0 0 1px rgba(255,255,255,.075) inset,
+            0 0 8px rgba(151,174,218,.14),
+            0 0 16px rgba(206,153,191,.065);
         }
         .card.selected .cardSurface::before {
           background:conic-gradient(from var(--selected-rim-angle),
-            hsl(350 35% 69%) 0deg,
-            hsl(20 34% 70%) 38deg,
-            hsl(48 31% 72%) 78deg,
-            hsl(86 28% 68%) 116deg,
-            hsl(145 28% 67%) 158deg,
-            hsl(186 31% 69%) 200deg,
-            hsl(220 32% 72%) 240deg,
-            hsl(260 30% 73%) 278deg,
-            hsl(306 30% 71%) 320deg,
-            hsl(350 35% 69%) 360deg);
-          opacity:.96;
-          filter:saturate(.80) contrast(1.02) brightness(1.02);
+            hsl(350 48% 69%) 0deg,
+            hsl(18 48% 70%) 38deg,
+            hsl(47 45% 71%) 78deg,
+            hsl(86 41% 67%) 116deg,
+            hsl(145 42% 66%) 158deg,
+            hsl(185 45% 68%) 200deg,
+            hsl(220 46% 71%) 240deg,
+            hsl(260 44% 72%) 278deg,
+            hsl(306 45% 70%) 320deg,
+            hsl(350 48% 69%) 360deg);
+          opacity:1;
+          filter:saturate(1.02) contrast(1.035) brightness(1.02)
+                 drop-shadow(0 0 2.4px rgba(184,196,232,.19));
         }
       }
-      @media (prefers-reduced-motion: reduce) {
-        .card.selected .cardSurface::before { animation-duration:12s; }
-      }
+      /* Do not let loading/hover state add a breathing animation to selected cards. */
+      .card.selected.contentLoading .cardSurface { animation:none !important; }
       .card.deleted .cardSurface { opacity:.25; transform:scale(.97); pointer-events:none; }
 
       /* Loaded conversations get a deliberate finished rim. Unloaded cards stay quiet and use placeholder lines. */
@@ -322,6 +340,32 @@
         }
         .card.unloaded .cardSurface { border-color:rgba(255,255,255,.075); box-shadow:none; }
         .card.unloaded:not(.expanded):not(.morphing):not(.collapsing) .cardSurface:hover { border-color:rgba(255,255,255,.13); box-shadow:0 8px 24px rgba(0,0,0,.14); }
+      }
+
+      /* Selected state wins over loaded/unloaded/hover rules declared above. */
+      .card.selected.loaded .cardSurface,
+      .card.selected.unloaded .cardSurface,
+      .card.selected.loaded:not(.expanded):not(.morphing):not(.collapsing) .cardSurface:hover,
+      .card.selected.unloaded:not(.expanded):not(.morphing):not(.collapsing) .cardSurface:hover {
+        border-color:rgba(112,118,132,.42);
+        box-shadow:
+          0 8px 28px rgba(0,0,0,.09),
+          0 0 0 1px rgba(255,255,255,.28) inset,
+          0 0 7px rgba(150,170,205,.12),
+          0 0 14px rgba(196,150,184,.055);
+      }
+      @media (prefers-color-scheme: dark) {
+        .card.selected.loaded .cardSurface,
+        .card.selected.unloaded .cardSurface,
+        .card.selected.loaded:not(.expanded):not(.morphing):not(.collapsing) .cardSurface:hover,
+        .card.selected.unloaded:not(.expanded):not(.morphing):not(.collapsing) .cardSurface:hover {
+          border-color:rgba(255,255,255,.30);
+          box-shadow:
+            0 9px 30px rgba(0,0,0,.26),
+            0 0 0 1px rgba(255,255,255,.075) inset,
+            0 0 8px rgba(151,174,218,.14),
+            0 0 16px rgba(206,153,191,.065);
+        }
       }
 
       .focusVeil {
