@@ -3,11 +3,13 @@
   window.__CGPT_CARD_MANAGER__ = true;
 
   const BATCH_SIZE = 24;
-  const PREFETCH_CONCURRENCY = 4;
-  const DELETE_DELAY_MS = 180;
+  const DETAIL_CONCURRENCY = 1;
+  const DETAIL_MIN_INTERVAL_MS = 1100;
+  const MAX_BACKGROUND_QUEUE = 8;
+  const DELETE_DELAY_MS = 800;
+  const MAX_429_RETRIES = 4;
   const HOVER_EXPAND_DELAY_MS = 500;
   const HOVER_COLLAPSE_DELAY_MS = 110;
-  const EXPANDED_HEIGHT = 500;
 
   const state = {
     token: null,
@@ -22,6 +24,10 @@
     detailPromises: new Map(),
     queue: [],
     activeLoads: 0,
+    lastDetailRequestAt: 0,
+    rateLimitUntil: 0,
+    rateLimitHits: 0,
+    queueTimer: null,
     opened: false,
     working: false,
     expandedId: null,
@@ -99,11 +105,14 @@
       @media (prefers-color-scheme: dark) { .cardSurface { background:#202022; border-color:rgba(255,255,255,.09); box-shadow:none; } }
       .card.expanded { z-index:50; }
       .card.expanded .cardSurface {
-        height:${EXPANDED_HEIGHT}px; transform:translateY(-3px);
-        box-shadow:0 24px 68px rgba(0,0,0,.28), 0 0 0 1px rgba(127,127,127,.12);
-        border-color:rgba(127,127,127,.28); z-index:50;
+        position:fixed; inset:auto;
+        left:var(--expand-left); top:var(--expand-top);
+        width:var(--expand-width); height:var(--expand-height);
+        transform:none;
+        box-shadow:0 30px 90px rgba(0,0,0,.34), 0 0 0 1px rgba(127,127,127,.14);
+        border-color:rgba(127,127,127,.30); z-index:60;
+        transition:left .36s cubic-bezier(.22,.8,.24,1), top .36s cubic-bezier(.22,.8,.24,1), width .38s cubic-bezier(.22,.8,.24,1), height .38s cubic-bezier(.22,.8,.24,1), box-shadow .28s ease, border-color .2s ease;
       }
-      .card.expanded.expandUp .cardSurface { transform:translateY(-327px); }
       .card.selected .cardSurface { outline:2px solid currentColor; outline-offset:1px; }
       .card.deleted .cardSurface { opacity:.25; transform:scale(.97); pointer-events:none; }
 
@@ -115,7 +124,7 @@
         -webkit-backdrop-filter: blur(1.6px) saturate(.96);
         transition:opacity .22s ease;
       }
-      .panel.hasExpanded .focusVeil { opacity:1; }
+      .panel.hasExpanded .focusVeil { opacity:1; pointer-events:auto; }
       @media (prefers-color-scheme: dark) { .focusVeil { background:rgba(0,0,0,.055); } }
 
       .cardHead { padding:14px 14px 10px; display:grid; grid-template-columns:auto 1fr auto; gap:10px; align-items:start; }
@@ -132,7 +141,7 @@
       .previewLabel { font-size:10px; line-height:1.55; font-weight:750; opacity:.42; padding-top:1px; }
       .previewText { font-size:12.3px; line-height:1.48; opacity:.74; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; word-break:break-word; }
       .previewItem.recent .previewText { opacity:.58; -webkit-line-clamp:1; }
-      .card.expanded .preview { height:80px; }
+      .card.expanded .preview, .card.expanded .loadingPreview { display:none; }
 
       .loadingPreview { padding:1px 14px 14px 42px; height:98px; }
       .loadingStatus { display:flex; align-items:center; gap:7px; font-size:11px; opacity:.58; margin-bottom:10px; }
@@ -150,23 +159,28 @@
         padding:0 10px 12px 42px; max-height:0; opacity:0; overflow:hidden; pointer-events:none;
         transition:max-height .40s cubic-bezier(.22,.8,.24,1), opacity .20s ease .10s;
       }
-      .card.expanded .expandedBody { max-height:340px; opacity:1; pointer-events:auto; }
+      .card.expanded .expandedBody {
+        max-height:none; height:calc(var(--expand-height) - 74px); opacity:1; pointer-events:auto;
+        padding:0 14px 15px 14px;
+        display:grid; grid-template-columns:minmax(280px,.9fr) minmax(0,2fr); gap:12px;
+      }
       .digest {
-        margin:0 4px 9px 0; padding:9px 10px 8px; border-radius:12px;
+        margin:0; padding:13px 13px 12px; border-radius:14px;
         background:rgba(127,127,127,.075); border:1px solid rgba(127,127,127,.08);
+        min-height:0; overflow:auto; scrollbar-width:thin;
       }
       .digestHead { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px; }
-      .digestHead b { font-size:11px; letter-spacing:.01em; }
+      .digestHead b { font-size:13px; letter-spacing:.01em; }
       .digestHead span { font-size:10px; opacity:.44; white-space:nowrap; }
-      .digestRow { display:grid; grid-template-columns:38px 1fr; gap:7px; margin-top:5px; align-items:start; }
-      .digestRow b { font-size:10px; opacity:.45; line-height:1.45; }
-      .digestRow span { font-size:11.4px; line-height:1.42; opacity:.78; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; word-break:break-word; }
+      .digestRow { display:grid; grid-template-columns:52px 1fr; gap:8px; margin-top:9px; align-items:start; }
+      .digestRow b { font-size:10.5px; opacity:.48; line-height:1.5; }
+      .digestRow span { font-size:12.2px; line-height:1.52; opacity:.82; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:4; overflow:hidden; word-break:break-word; }
 
-      .messages { margin:0 4px 0 0; padding:0 4px 4px 0; height:194px; overflow:auto; overscroll-behavior:contain; scrollbar-width:thin; }
-      .msg { margin:0 0 8px; padding:8px 9px; border-radius:11px; font-size:11.8px; line-height:1.48; white-space:pre-wrap; word-break:break-word; background:rgba(127,127,127,.075); }
+      .messages { margin:0; padding:0 5px 5px 0; height:100%; min-height:0; overflow:auto; overscroll-behavior:contain; scrollbar-width:thin; }
+      .msg { margin:0 0 10px; padding:10px 11px; border-radius:12px; font-size:12.6px; line-height:1.56; white-space:pre-wrap; word-break:break-word; background:rgba(127,127,127,.075); }
       .msg.user { background:rgba(127,127,127,.145); }
       .role { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:9.5px; font-weight:750; letter-spacing:.04em; opacity:.43; margin-bottom:4px; }
-      .msgBody { position:relative; max-height:92px; overflow:hidden; }
+      .msgBody { position:relative; max-height:132px; overflow:hidden; }
       .msgBody.long:not(.open)::after { content:""; position:absolute; left:0; right:0; bottom:0; height:28px; background:linear-gradient(transparent, rgba(127,127,127,.11)); pointer-events:none; }
       .msgBody.open { max-height:none; }
       .msgToggle { border:0; padding:3px 0 0; background:transparent; color:inherit; cursor:pointer; font-size:10px; opacity:.55; }
@@ -290,6 +304,39 @@
     return new Intl.DateTimeFormat('zh-CN', options).format(d);
   }
 
+  function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+  function retryAfterMs(res, fallbackMs = 10000) {
+    const raw = res?.headers?.get?.('Retry-After');
+    if (!raw) return fallbackMs;
+    const seconds = Number(raw);
+    if (Number.isFinite(seconds) && seconds >= 0) return Math.max(1000, seconds * 1000);
+    const date = Date.parse(raw);
+    return Number.isNaN(date) ? fallbackMs : Math.max(1000, date - Date.now());
+  }
+
+  function setRateLimit(ms) {
+    state.rateLimitHits += 1;
+    state.rateLimitUntil = Math.max(state.rateLimitUntil, Date.now() + ms);
+    progress.textContent = `请求过快，冷却 ${Math.ceil(ms / 1000)}s`;
+    showToast(`触发 429，已自动降速并等待 ${Math.ceil(ms / 1000)} 秒`);
+  }
+
+  async function apiWith429Retry(path, options = {}, maxRetries = MAX_429_RETRIES) {
+    let attempt = 0;
+    while (true) {
+      const wait = state.rateLimitUntil - Date.now();
+      if (wait > 0) await sleep(wait);
+      const res = await api(path, options);
+      if (res.status !== 429 || attempt >= maxRetries) return res;
+      const fallback = Math.min(90000, 8000 * (2 ** attempt));
+      const delay = retryAfterMs(res, fallback) + Math.floor(Math.random() * 900);
+      setRateLimit(delay);
+      attempt += 1;
+      await sleep(delay);
+    }
+  }
+
   async function loadNextBatch() {
     if (state.loadingList || (state.offset >= state.total && state.total !== 0)) return;
     state.loadingList = true;
@@ -297,7 +344,7 @@
     loadMoreBtn.textContent = '读取中…';
     try {
       const url = `/backend-api/conversations?offset=${state.offset}&limit=${BATCH_SIZE}&order=updated`;
-      const res = await api(url);
+      const res = await apiWith429Retry(url, {}, 2);
       if (!res.ok) throw new Error(`列表读取失败 (${res.status})`);
       const data = await res.json();
       const items = Array.isArray(data?.items) ? data.items : [];
@@ -381,37 +428,72 @@
   function enqueueDetail(chatId, priority = false) {
     if (state.details.has(chatId) || state.detailPromises.has(chatId)) return;
     markCardLoading(chatId);
-    if (state.queue.includes(chatId)) {
-      if (priority) state.queue = [chatId, ...state.queue.filter(x => x !== chatId)];
+
+    const existing = state.queue.findIndex(x => x.id === chatId);
+    if (existing >= 0) {
+      if (priority) {
+        const item = state.queue.splice(existing, 1)[0];
+        item.priority = true;
+        state.queue.unshift(item);
+      }
       return;
     }
-    priority ? state.queue.unshift(chatId) : state.queue.push(chatId);
+
+    if (!priority) {
+      const backgroundCount = state.queue.filter(x => !x.priority).length;
+      if (backgroundCount >= MAX_BACKGROUND_QUEUE) return;
+    }
+    const item = { id: chatId, priority };
+    priority ? state.queue.unshift(item) : state.queue.push(item);
     pumpQueue();
   }
 
+  function removeBackgroundQueued(chatId) {
+    state.queue = state.queue.filter(x => x.id !== chatId || x.priority);
+  }
+
   function pumpQueue() {
-    while (state.activeLoads < PREFETCH_CONCURRENCY && state.queue.length) {
-      const id = state.queue.shift();
-      state.activeLoads++;
-      const p = (async () => {
-        try {
-          const res = await api(`/backend-api/conversation/${encodeURIComponent(id)}`);
-          if (!res.ok) throw new Error(`正文读取失败 (${res.status})`);
-          const data = await res.json();
-          const parsed = parseConversation(data);
-          state.details.set(id, parsed.messages);
-          if (parsed.createdAt) state.createdTimes.set(id, parsed.createdAt);
-        } catch (e) {
-          state.details.set(id, [{ role:'assistant', text:`[无法读取：${e.message}]`, time:0 }]);
-        } finally {
-          state.detailPromises.delete(id);
-          state.activeLoads--;
-          updateCardDetail(id);
-          pumpQueue();
-        }
-      })();
-      state.detailPromises.set(id, p);
+    clearTimeout(state.queueTimer);
+    if (state.activeLoads >= DETAIL_CONCURRENCY || !state.queue.length) return;
+
+    const cooldown = Math.max(0, state.rateLimitUntil - Date.now());
+    const spacing = Math.max(0, DETAIL_MIN_INTERVAL_MS - (Date.now() - state.lastDetailRequestAt));
+    const wait = Math.max(cooldown, spacing);
+    if (wait > 0) {
+      state.queueTimer = setTimeout(pumpQueue, wait + 20);
+      return;
     }
+
+    const item = state.queue.shift();
+    const id = item.id;
+    state.activeLoads++;
+    state.lastDetailRequestAt = Date.now();
+    const p = (async () => {
+      try {
+        const res = await api(`/backend-api/conversation/${encodeURIComponent(id)}`);
+        if (res.status === 429) {
+          const fallback = Math.min(90000, 9000 * (2 ** Math.min(state.rateLimitHits, 3)));
+          const delay = retryAfterMs(res, fallback) + Math.floor(Math.random() * 1000);
+          setRateLimit(delay);
+          state.queue.unshift({ id, priority:true });
+          return;
+        }
+        if (!res.ok) throw new Error(`正文读取失败 (${res.status})`);
+        const data = await res.json();
+        const parsed = parseConversation(data);
+        state.details.set(id, parsed.messages);
+        if (parsed.createdAt) state.createdTimes.set(id, parsed.createdAt);
+        state.rateLimitHits = Math.max(0, state.rateLimitHits - 1);
+      } catch (e) {
+        state.details.set(id, [{ role:'assistant', text:`[无法读取：${e.message}]`, time:0 }]);
+      } finally {
+        state.detailPromises.delete(id);
+        state.activeLoads--;
+        updateCardDetail(id);
+        pumpQueue();
+      }
+    })();
+    state.detailPromises.set(id, p);
   }
 
   function filteredChats() {
@@ -562,8 +644,12 @@
   function observeCards() {
     observer?.disconnect();
     observer = new IntersectionObserver((entries) => {
-      for (const e of entries) if (e.isIntersecting) enqueueDetail(e.target.dataset.id, false);
-    }, { root: content, rootMargin:'220px', threshold:.01 });
+      for (const e of entries) {
+        const id = e.target.dataset.id;
+        if (e.isIntersecting) enqueueDetail(id, false);
+        else removeBackgroundQueued(id);
+      }
+    }, { root: content, rootMargin:'40px', threshold:.08 });
     grid.querySelectorAll('.card').forEach(card => observer.observe(card));
   }
 
@@ -578,11 +664,22 @@
     clearTimeout(state.collapseTimer);
     const id = card.dataset.id;
     if (state.expandedId && state.expandedId !== id) collapseExpanded(true);
+
     const rect = card.getBoundingClientRect();
     const contentRect = content.getBoundingClientRect();
-    const roomBelow = contentRect.bottom - rect.top;
-    const roomAbove = rect.bottom - contentRect.top;
-    card.classList.toggle('expandUp', roomBelow < EXPANDED_HEIGHT + 8 && roomAbove > roomBelow);
+    const gap = 12;
+    const targetWidth = Math.min(contentRect.width - 28, rect.width * 3 + gap * 2);
+    const targetHeight = Math.min(contentRect.height - 24, rect.height * 3 + gap * 2);
+
+    let left = rect.left - (targetWidth - rect.width) / 2;
+    let top = rect.top - (targetHeight - rect.height) / 2;
+    left = Math.max(contentRect.left + 10, Math.min(left, contentRect.right - targetWidth - 10));
+    top = Math.max(contentRect.top + 10, Math.min(top, contentRect.bottom - targetHeight - 10));
+
+    card.style.setProperty('--expand-left', `${Math.round(left)}px`);
+    card.style.setProperty('--expand-top', `${Math.round(top)}px`);
+    card.style.setProperty('--expand-width', `${Math.round(targetWidth)}px`);
+    card.style.setProperty('--expand-height', `${Math.round(targetHeight)}px`);
     card.classList.add('expanded');
     panel.classList.add('hasExpanded');
     state.expandedId = id;
@@ -595,7 +692,7 @@
     const run = () => {
       if (state.expandedId) {
         const card = grid.querySelector(`.card[data-id="${CSS.escape(state.expandedId)}"]`);
-        card?.classList.remove('expanded', 'expandUp');
+        card?.classList.remove('expanded');
       }
       state.expandedId = null;
       panel.classList.remove('hasExpanded');
@@ -605,7 +702,7 @@
   }
 
   async function patchConversation(id, body) {
-    const res = await api(`/backend-api/conversation/${encodeURIComponent(id)}`, { method:'PATCH', body:JSON.stringify(body) });
+    const res = await apiWith429Retry(`/backend-api/conversation/${encodeURIComponent(id)}`, { method:'PATCH', body:JSON.stringify(body) });
     if (!res.ok) throw new Error(`操作失败 (${res.status})`);
   }
 
@@ -694,7 +791,6 @@
     if (!card) return;
     if (e.relatedTarget && card.contains(e.relatedTarget)) return;
     clearTimeout(state.collapseTimer);
-    enqueueDetail(card.dataset.id, true); // start loading immediately, expansion still waits 0.5 s
     clearTimeout(state.hoverTimer);
     state.hoverTimer = setTimeout(() => expandCard(card), HOVER_EXPAND_DELAY_MS);
   });
