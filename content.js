@@ -76,6 +76,10 @@
     imageUrlCache: new Map(),
     imagePromises: new Map(),
     imageViewerOpen: false,
+    deletePopoverOpen: false,
+    deletePopoverIds: [],
+    deleteAnchor: null,
+    suppressNextClick: false,
   };
 
   const host = document.createElement('div');
@@ -696,6 +700,82 @@
       .btn.warn { background:rgba(220,120,40,.13); color:#a84d08; }
       .btn.warn:hover { background:rgba(220,120,40,.20); }
 
+      /* Anchored delete confirmation. It lives beside the exact delete trigger instead of
+         using the browser confirm(), so destructive actions stay visually consistent. */
+      .deletePopover {
+        position:absolute; z-index:310; width:264px; padding:12px; border-radius:15px;
+        color:inherit; background:rgba(250,250,249,.985); border:1px solid rgba(127,127,127,.18);
+        box-shadow:0 18px 54px rgba(0,0,0,.22), 0 2px 8px rgba(0,0,0,.06);
+        backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px);
+        opacity:0; visibility:hidden; pointer-events:none;
+        transform:translateY(4px) scale(.965); transform-origin:85% 0;
+        transition:opacity .12s ease, transform .20s cubic-bezier(.16,1,.3,1), visibility 0s linear .20s;
+      }
+      .deletePopover.show {
+        opacity:1; visibility:visible; pointer-events:auto; transform:translateY(0) scale(1);
+        transition:opacity .12s ease, transform .20s cubic-bezier(.16,1,.3,1), visibility 0s;
+      }
+      .deletePopover.above { transform-origin:85% 100%; }
+      .deletePopover.above:not(.show) { transform:translateY(-4px) scale(.965); }
+      @media (prefers-color-scheme: dark) {
+        .deletePopover { background:rgba(31,31,33,.985); border-color:rgba(255,255,255,.12); box-shadow:0 20px 58px rgba(0,0,0,.42); }
+      }
+      .deletePopoverHead { display:flex; align-items:flex-start; gap:10px; }
+      .deletePopoverIcon {
+        flex:0 0 auto; width:30px; height:30px; border-radius:10px; display:grid; place-items:center;
+        color:#c93434; background:rgba(220,38,38,.095); box-shadow:inset 0 0 0 1px rgba(220,38,38,.06);
+      }
+      .deletePopoverIcon svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.65; stroke-linecap:round; stroke-linejoin:round; }
+      .deletePopoverCopy { min-width:0; padding-top:1px; }
+      .deletePopoverCopy b { display:block; font-size:12.5px; line-height:1.35; letter-spacing:-.01em; }
+      .deletePopoverCopy span { display:block; margin-top:4px; font-size:10.5px; line-height:1.45; opacity:.53; }
+      .deletePopoverActions { display:flex; justify-content:flex-end; gap:7px; margin-top:12px; }
+      .deletePopover .btn { height:34px; border-radius:10px; font-size:11px; padding:0 12px; }
+      .deletePopover .btn.deleteConfirm { color:#fff; background:#c93434; }
+      .deletePopover .btn.deleteConfirm:hover { background:#b92727; }
+      @media (prefers-color-scheme: dark) { .deletePopover .btn.deleteConfirm { background:#d54444; color:#fff; } }
+
+      /* Deletion is optimistic visually: the card desaturates immediately after confirmation.
+         Once the server confirms, the surface dissolves while a separate compositor-friendly
+         powder layer carries particles away. */
+      .card.deletePending .selectedRim { opacity:0 !important; }
+      .card.deletePending .cardSurface {
+        filter:grayscale(1) saturate(0); opacity:.52; pointer-events:none;
+        transition:filter .16s ease, opacity .16s ease, box-shadow .16s ease, border-color .16s ease;
+        border-color:rgba(127,127,127,.20) !important;
+        box-shadow:0 3px 12px rgba(0,0,0,.035) !important;
+      }
+      .card.deletePending .cardSurface::after { opacity:0 !important; }
+      .card.deletingPowder .cardSurface {
+        pointer-events:none; will-change:clip-path, opacity, filter;
+        animation:cardPowderOut .76s cubic-bezier(.20,.72,.18,1) forwards;
+      }
+      @keyframes cardPowderOut {
+        0%   { opacity:.52; filter:grayscale(1) saturate(0); clip-path:inset(0 0 0 0 round 17px); }
+        18%  { opacity:.49; filter:grayscale(1) saturate(0) blur(0); clip-path:inset(0 4% 0 0 round 17px); }
+        48%  { opacity:.38; filter:grayscale(1) saturate(0) blur(.2px); clip-path:inset(0 36% 0 0 round 15px); }
+        76%  { opacity:.19; filter:grayscale(1) saturate(0) blur(.65px); clip-path:inset(0 78% 0 0 round 12px); }
+        100% { opacity:0; filter:grayscale(1) saturate(0) blur(1.2px); clip-path:inset(0 100% 0 0 round 9px); }
+      }
+      .deleteDustLayer { position:fixed; z-index:180; pointer-events:none; overflow:visible; contain:layout style; }
+      .deleteDustParticle {
+        position:absolute; left:var(--x); top:var(--y); width:var(--s); height:var(--s); border-radius:var(--r);
+        background:var(--c); opacity:0; transform:translate3d(0,0,0) rotate(0deg) scale(1);
+        animation:dustFly var(--dur) cubic-bezier(.18,.72,.22,1) var(--delay) forwards;
+        will-change:transform, opacity; box-shadow:0 0 2px rgba(127,127,127,.08);
+      }
+      @keyframes dustFly {
+        0% { opacity:0; transform:translate3d(0,0,0) rotate(0deg) scale(.72); }
+        12% { opacity:var(--a); transform:translate3d(1px,0,0) rotate(6deg) scale(1); }
+        58% { opacity:calc(var(--a) * .72); }
+        100% { opacity:0; transform:translate3d(var(--dx),var(--dy),0) rotate(var(--rot)) scale(.08); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .card.deletingPowder .cardSurface { animation:fadeDelete .22s ease forwards; }
+        .deleteDustLayer { display:none; }
+        @keyframes fadeDelete { to { opacity:0; } }
+      }
+
     </style>
     <button class="launcher" title="ChatGPT 对话卡片管理器" aria-label="打开对话管理器"><span class="gridIcon"><i></i><i></i><i></i><i></i></span></button>
     <div class="overlay">
@@ -751,6 +831,13 @@
             <div class="confirmActions"><button class="btn" data-act="cancelFast" type="button">取消</button><button class="btn warn" data-act="confirmFast" type="button">仍然选择快速</button></div>
           </div>
         </div>
+        <div class="deletePopover" role="dialog" aria-modal="false" aria-hidden="true" aria-label="确认删除对话">
+          <div class="deletePopoverHead">
+            <div class="deletePopoverIcon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M4 6h12M8 3.5h4M6.3 6l.55 10h6.3l.55-10M8.4 8.5v5M11.6 8.5v5"/></svg></div>
+            <div class="deletePopoverCopy"><b class="deletePopoverTitle">删除这个对话？</b><span>删除后将从 ChatGPT 历史记录中移除，此操作无法在本扩展中撤销。</span></div>
+          </div>
+          <div class="deletePopoverActions"><button class="btn" data-act="cancelDelete" type="button">取消</button><button class="btn deleteConfirm" data-act="confirmDelete" type="button">删除</button></div>
+        </div>
         <div class="toast"></div>
       </section>
       <div class="imageViewer" role="dialog" aria-modal="true" aria-label="图片预览" aria-hidden="true">
@@ -782,6 +869,8 @@
   const speedCurrent = $('.speedCurrent');
   const loadSpeedMeta = $('.loadSpeedMeta');
   const confirmVeil = $('.confirmVeil');
+  const deletePopover = $('.deletePopover');
+  const deletePopoverTitle = $('.deletePopoverTitle');
   const listSentinel = $('.listSentinel');
   const rateBanner = $('.rateBanner');
   const rateDetail = $('.rateDetail');
@@ -830,6 +919,130 @@
     toast.classList.add('show');
     clearTimeout(showToast.t);
     showToast.t = setTimeout(() => toast.classList.remove('show'), 1800);
+  }
+
+  function closeDeletePopover() {
+    if (!deletePopover) return;
+    state.deletePopoverOpen = false;
+    state.deletePopoverIds = [];
+    state.deleteAnchor = null;
+    deletePopover.classList.remove('show', 'above', 'below');
+    deletePopover.setAttribute('aria-hidden', 'true');
+    deletePopover.style.removeProperty('left');
+    deletePopover.style.removeProperty('top');
+    deletePopover.style.removeProperty('transform-origin');
+  }
+
+  function openDeletePopover(anchor, ids) {
+    if (!deletePopover || !anchor || state.working) return;
+    const cleanIds = [...new Set((ids || []).filter(Boolean))];
+    if (!cleanIds.length) return;
+    setCountMenu(false);
+    setSpeedMenu(false);
+    state.deletePopoverOpen = true;
+    state.deletePopoverIds = cleanIds;
+    state.deleteAnchor = anchor;
+    deletePopoverTitle.textContent = cleanIds.length === 1 ? '删除这个对话？' : `删除选中的 ${cleanIds.length} 个对话？`;
+
+    // Measure invisibly first, then animate from the clicked delete button.
+    deletePopover.classList.remove('show', 'above', 'below');
+    deletePopover.style.visibility = 'hidden';
+    deletePopover.style.pointerEvents = 'none';
+    deletePopover.style.left = '0px';
+    deletePopover.style.top = '0px';
+    deletePopover.setAttribute('aria-hidden', 'false');
+    const panelRect = panel.getBoundingClientRect();
+    const anchorRect = anchor.getBoundingClientRect();
+    const popW = deletePopover.offsetWidth || 264;
+    const popH = deletePopover.offsetHeight || 128;
+    const gap = 8;
+    const roomAbove = anchorRect.top - panelRect.top;
+    const roomBelow = panelRect.bottom - anchorRect.bottom;
+    const above = roomAbove >= popH + gap || roomAbove > roomBelow;
+    const minLeft = 12;
+    const maxLeft = Math.max(minLeft, panelRect.width - popW - 12);
+    const desiredLeft = anchorRect.right - panelRect.left - popW;
+    const left = Math.min(maxLeft, Math.max(minLeft, desiredLeft));
+    let top = above
+      ? anchorRect.top - panelRect.top - popH - gap
+      : anchorRect.bottom - panelRect.top + gap;
+    top = Math.max(10, Math.min(panelRect.height - popH - 10, top));
+    const originX = Math.min(popW - 18, Math.max(18, anchorRect.left + anchorRect.width / 2 - panelRect.left - left));
+    deletePopover.style.left = `${Math.round(left)}px`;
+    deletePopover.style.top = `${Math.round(top)}px`;
+    deletePopover.style.transformOrigin = `${Math.round(originX)}px ${above ? '100%' : '0%'}`;
+    deletePopover.classList.add(above ? 'above' : 'below');
+    void deletePopover.offsetWidth;
+    deletePopover.style.removeProperty('visibility');
+    deletePopover.style.removeProperty('pointer-events');
+    requestAnimationFrame(() => deletePopover.classList.add('show'));
+  }
+
+  function setDeletePending(ids, pending) {
+    for (const id of ids) {
+      const card = grid.querySelector(`.card[data-id="${CSS.escape(id)}"]`);
+      if (!card) continue;
+      card.classList.toggle('deletePending', !!pending);
+      if (!pending) card.classList.remove('deletingPowder');
+    }
+  }
+
+  function createDeleteDust(card) {
+    const surface = card?.querySelector('.cardSurface');
+    if (!surface) return null;
+    const rect = surface.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const layer = document.createElement('div');
+    layer.className = 'deleteDustLayer';
+    layer.style.left = `${rect.left}px`;
+    layer.style.top = `${rect.top}px`;
+    layer.style.width = `${rect.width}px`;
+    layer.style.height = `${rect.height}px`;
+    const area = rect.width * rect.height;
+    const count = Math.max(44, Math.min(92, Math.round(area / 2600)));
+    const tones = [
+      'rgba(92,92,96,.62)', 'rgba(126,126,132,.54)', 'rgba(160,160,166,.48)',
+      'rgba(198,198,202,.42)', 'rgba(72,72,76,.36)'
+    ];
+    for (let i = 0; i < count; i++) {
+      const p = document.createElement('i');
+      p.className = 'deleteDustParticle';
+      const x = 5 + Math.random() * 94;
+      const y = 4 + Math.random() * 92;
+      const size = 1.6 + Math.random() * 4.6;
+      const delay = (1 - x / 100) * 255 + Math.random() * 72;
+      const dur = 410 + Math.random() * 310;
+      const dx = 18 + Math.random() * 70;
+      const dy = -30 + Math.random() * 68;
+      const rot = -120 + Math.random() * 300;
+      const alpha = .34 + Math.random() * .54;
+      p.style.setProperty('--x', `${x}%`);
+      p.style.setProperty('--y', `${y}%`);
+      p.style.setProperty('--s', `${size}px`);
+      p.style.setProperty('--r', Math.random() > .42 ? '50%' : `${1 + Math.random() * 2}px`);
+      p.style.setProperty('--delay', `${delay.toFixed(0)}ms`);
+      p.style.setProperty('--dur', `${dur.toFixed(0)}ms`);
+      p.style.setProperty('--dx', `${dx.toFixed(1)}px`);
+      p.style.setProperty('--dy', `${dy.toFixed(1)}px`);
+      p.style.setProperty('--rot', `${rot.toFixed(0)}deg`);
+      p.style.setProperty('--a', alpha.toFixed(2));
+      p.style.setProperty('--c', tones[Math.floor(Math.random() * tones.length)]);
+      layer.appendChild(p);
+    }
+    overlay.appendChild(layer);
+    return layer;
+  }
+
+  function playDeletePowder(card) {
+    if (!card?.isConnected) return Promise.resolve();
+    const dust = createDeleteDust(card);
+    card.classList.add('deletingPowder');
+    return new Promise(resolve => {
+      setTimeout(() => {
+        dust?.remove();
+        resolve();
+      }, 850);
+    });
   }
 
   function updateAutoExpandUI() {
@@ -2304,35 +2517,67 @@
     if (!res.ok) throw new Error(friendlyHttpError(res.status, '操作'));
   }
 
+  function removeConversationLocal(id) {
+    state.chats = state.chats.filter(c => c.id !== id);
+    state.offset = Math.max(0, state.offset - 1);
+    state.total = Math.max(0, state.total - 1);
+    state.details.delete(id);
+    state.createdTimes.delete(id);
+    state.detailErrors.delete(id);
+    state.manualPendingIds.delete(id);
+    state.loadingIds.delete(id);
+    state.selected.delete(id);
+    if (state.expandedId === id) {
+      state.expandedId = null;
+      panel.classList.remove('hasExpanded');
+    }
+    cacheDelete(id).catch(() => {});
+  }
+
   async function batchAction(mode, ids) {
+    ids = [...new Set((ids || []).filter(Boolean))];
     if (!ids.length || state.working) return;
     const label = mode === 'delete' ? '删除' : '归档';
-    if (mode === 'delete' && !confirm(`确定永久删除选中的 ${ids.length} 个对话吗？\n\n此操作无法在本扩展中撤销。`)) return;
-    collapseExpanded(true);
+    closeDeletePopover();
+
+    // Deletions become visibly pending immediately, before the first throttled network request.
+    // Archives keep their older behavior and collapse the reading view up-front.
+    if (mode === 'delete') setDeletePending(ids, true);
+    else collapseExpanded(true);
+
     state.working = true;
     updateStats();
     let ok = 0;
     let failed = 0;
+    const untouchedIds = new Set(ids);
+
     for (let i = 0; i < ids.length; i++) {
       const id = ids[i];
       progress.textContent = `${label} ${i + 1} / ${ids.length}`;
       try {
         await patchConversation(id, mode === 'delete' ? { is_visible:false } : { is_archived:true });
         ok++;
+        untouchedIds.delete(id);
         const card = grid.querySelector(`.card[data-id="${CSS.escape(id)}"]`);
-        card?.classList.add('deleted');
-        state.selected.delete(id);
-        setTimeout(() => {
-          state.chats = state.chats.filter(c => c.id !== id);
-          state.details.delete(id);
-          state.createdTimes.delete(id);
-          state.detailErrors.delete(id);
-          cacheDelete(id).catch(() => {});
-          render(); observeCards();
-        }, 260);
+
+        if (mode === 'delete') {
+          // Server confirmed: turn the already-grey card into a short powder dissolve.
+          await playDeletePowder(card);
+          removeConversationLocal(id);
+          card?.remove();
+        } else {
+          card?.classList.add('deleted');
+          state.selected.delete(id);
+          await new Promise(resolve => setTimeout(resolve, 220));
+          removeConversationLocal(id);
+          card?.remove();
+        }
+        updateStats();
       } catch (e) {
         failed++;
+        untouchedIds.delete(id);
         console.error('[Chat Deck]', id, e);
+        if (mode === 'delete') setDeletePending([id], false);
         if ((e?.message || '') === '请求过多，请稍后再试') {
           progress.textContent = '请求过多，请稍后再试';
           break;
@@ -2340,28 +2585,44 @@
       }
       // No fixed burst loop: the global mutation scheduler reserves a safe cross-tab slot for every request.
     }
+
+    // If a 429 or other early stop interrupted the loop, restore cards that were never sent.
+    if (mode === 'delete' && untouchedIds.size) setDeletePending([...untouchedIds], false);
     state.working = false;
     const rateStopped = Date.now() < Math.max(state.rateLimitUntil, sharedNumber('chatdeck:rateLimitUntil'));
     progress.textContent = rateStopped ? '请求过多，请稍后再试' : (failed ? `完成 ${ok}，失败 ${failed}` : `完成 ${ok}`);
     showToast(rateStopped ? '请求过多，请稍后再试' : `${label}完成：${ok}${failed ? `，失败 ${failed}` : ''}`);
-    updateStats();
+    if (!grid.querySelector('.card')) render();
+    else updateStats();
     setTimeout(() => { if (!state.working) progress.textContent = ''; }, 2200);
   }
 
   root.addEventListener('click', (e) => {
+    if (state.suppressNextClick) {
+      state.suppressNextClick = false;
+      e.preventDefault();
+      return;
+    }
     const act = e.target.closest('[data-act]')?.dataset.act;
     if (e.target.closest('.launcher')) {
       state.opened = true; overlay.classList.add('open'); updateRateBanner();
       if (!state.chats.length) loadNextBatch();
       return;
     }
-    if (act === 'close') { closeImageViewer(); collapseExpanded(true); state.opened = false; overlay.classList.remove('open'); return; }
+    if (act === 'close') { closeDeletePopover(); closeImageViewer(); collapseExpanded(true); state.opened = false; overlay.classList.remove('open'); return; }
     if (act === 'toggleAutoExpand') { setAutoExpand(!state.autoExpand); return; }
     if (act === 'loadMore') { loadNextBatch(); return; }
     if (act === 'toggleCountMenu') { if (!countToggle.disabled) setCountMenu(!state.countMenuOpen); return; }
     if (act === 'toggleSpeedMenu') { setSpeedMenu(!state.speedMenuOpen); return; }
     if (act === 'cancelFast') { closeFastWarning(false); return; }
     if (act === 'confirmFast') { closeFastWarning(true); return; }
+    if (act === 'cancelDelete') { closeDeletePopover(); return; }
+    if (act === 'confirmDelete') {
+      const ids = [...state.deletePopoverIds];
+      if (ids.length) batchAction('delete', ids);
+      else closeDeletePopover();
+      return;
+    }
     const countOption = e.target.closest('.countOption');
     if (countOption?.dataset.count) { setCountChoice(countOption.dataset.count); return; }
     const speedChoice = e.target.closest('.speedChoice');
@@ -2374,7 +2635,11 @@
       render(); observeCards(); return;
     }
     if (act === 'archive') { batchAction('archive', [...state.selected]); return; }
-    if (act === 'delete') { batchAction('delete', [...state.selected]); return; }
+    if (act === 'delete') {
+      const anchor = e.target.closest('[data-act="delete"]');
+      openDeletePopover(anchor, [...state.selected]);
+      return;
+    }
     const mediaPreview = e.target.closest('.mediaTile[data-url], .compactMedia[data-url]');
     if (mediaPreview?.dataset.url) {
       const img = mediaPreview.querySelector('img');
@@ -2407,7 +2672,11 @@
       openConversationTab(id);
       return;
     }
-    if (act === 'singleDelete') { batchAction('delete', [id]); return; }
+    if (act === 'singleDelete') {
+      const anchor = e.target.closest('[data-act="singleDelete"]');
+      openDeletePopover(anchor, [id]);
+      return;
+    }
 
     // Manual mode: only a click on the non-interactive card surface expands it.
     // Buttons, checkbox controls and links retain their own behavior.
@@ -2435,6 +2704,7 @@
 
   root.addEventListener('pointerout', (e) => {
     if (state.imageViewerOpen) return;
+    if (state.deletePopoverOpen) return;
     if (!state.autoExpand) return;
     const card = e.target.closest('.card');
     if (!card) return;
@@ -2449,6 +2719,11 @@
 
   root.addEventListener('pointerdown', (e) => {
     if (state.countMenuOpen && !e.target.closest('.loadCombo')) setCountMenu(false);
+    if (state.deletePopoverOpen && !e.target.closest('.deletePopover') && !e.target.closest('[data-act="singleDelete"], [data-act="delete"]')) {
+      closeDeletePopover();
+      state.suppressNextClick = true;
+      return;
+    }
     // The lightbox owns outside clicks while it is open. Do not let the underlying
     // manual-expand handler interpret the same pointerdown as a request to collapse the card.
     if (state.imageViewerOpen || e.target.closest('.imageViewer')) return;
@@ -2498,11 +2773,12 @@
       state.opened = !state.opened;
       overlay.classList.toggle('open', state.opened);
       if (state.opened) updateRateBanner();
-      if (!state.opened) collapseExpanded(true);
+      if (!state.opened) { closeDeletePopover(); collapseExpanded(true); }
       if (state.opened && !state.chats.length) loadNextBatch();
     }
     if (e.key === 'Escape' && state.opened) {
-      if (state.fastWarningOpen) closeFastWarning(false);
+      if (state.deletePopoverOpen) closeDeletePopover();
+      else if (state.fastWarningOpen) closeFastWarning(false);
       else if (state.speedMenuOpen) setSpeedMenu(false);
       else if (state.countMenuOpen) setCountMenu(false);
       else if (state.expandedId) collapseExpanded(true);
