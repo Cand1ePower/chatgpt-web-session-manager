@@ -7,7 +7,9 @@
   const LIST_FETCH_MAX = 100;
   const DETAIL_CONCURRENCY = 1;
   const DETAIL_MIN_INTERVAL_MS = 900;
-  const BACKGROUND_DETAIL_INTERVAL_MS = 9000;
+  const BACKGROUND_DETAIL_INTERVAL_MS = 7200;
+  const IDLE_PREFETCH_AFTER_MS = 6500;
+  const IDLE_PREFETCH_TICK_MS = 1600;
   const LIST_MIN_INTERVAL_MS = 1800;
   const MUTATION_MIN_INTERVAL_MS = 2200;
   const MEDIA_MIN_INTERVAL_MS = 900;
@@ -18,7 +20,7 @@
     fast:   { label:'快速', interval:900, hint:'明显更快，限流风险更高' },
   });
   const MAX_BACKGROUND_QUEUE = 2;
-  const AUTO_BACKGROUND_PREFETCH = false;
+  const AUTO_BACKGROUND_PREFETCH = false; // viewport observer remains disabled; idle prefetch is scheduled separately.
   const MAX_429_RETRIES = 0;
   const HOVER_EXPAND_DELAY_MS = 500;
   const HOVER_COLLAPSE_DELAY_MS = 110;
@@ -80,6 +82,9 @@
     deletePopoverIds: [],
     deleteAnchor: null,
     suppressNextClick: false,
+    lastUserActivityAt: Date.now(),
+    idlePrefetchTimer: null,
+    panelAnimating: false,
   };
 
   const host = document.createElement('div');
@@ -106,8 +111,7 @@
       .launcher .gridIcon i { display:block; border-radius:3px; background:#fff; opacity:.94; }
 
       .overlay { position: fixed; inset: 0; z-index: 2147483645; display: none; background: rgba(8,8,10,.34); backdrop-filter: blur(3px); }
-      .overlay.open { display: block; animation: fadeIn .16s ease-out; }
-      @keyframes fadeIn { from { opacity:0 } to { opacity:1 } }
+      .overlay.open { display: block; }
 
       .panel {
         position:absolute; inset: 16px; min-width: 760px; overflow:hidden;
@@ -116,6 +120,7 @@
         box-shadow: 0 30px 90px rgba(0,0,0,.30);
         display:grid; grid-template-rows:auto auto 1fr auto;
         font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        transform:translate3d(0,0,0) scale(1); transform-origin:100% 100%; will-change:transform, opacity;
       }
       @media (prefers-color-scheme: dark) {
         .panel { background: color-mix(in srgb, #171719 95%, transparent); color:#f3f3f4; border-color:rgba(255,255,255,.10); }
@@ -524,13 +529,12 @@
       .loadCombo.menuOpen .countMenu { opacity:1; visibility:visible; pointer-events:auto; transform:translateY(0) scale(1); transition:opacity .16s ease, transform .26s cubic-bezier(.16,1,.3,1), visibility 0s; }
       @media (prefers-color-scheme: dark) { .countMenu { background:rgba(34,34,36,.97); border-color:rgba(255,255,255,.12); } }
       .countOption {
-        width:100%; min-height:38px; padding:7px 9px; border:0; border-radius:10px; color:inherit; background:transparent; cursor:pointer;
+        width:100%; min-height:36px; padding:6px 9px; border:0; border-radius:10px; color:inherit; background:transparent; cursor:pointer;
         display:grid; grid-template-columns:1fr auto; align-items:center; gap:8px; text-align:left; transition:background .14s ease, transform .14s ease;
       }
       .countOption:hover { background:rgba(127,127,127,.12); transform:translateX(2px); }
-      .countOption .optionCopy { display:flex; flex-direction:column; min-width:0; }
-      .countOption b { font-size:11.5px; font-weight:680; }
-      .countOption small { margin-top:2px; font-size:9.4px; opacity:.44; }
+      .countOption .optionCopy { display:flex; align-items:center; min-width:0; }
+      .countOption b { font-size:12px; font-weight:700; letter-spacing:.01em; }
       .countOption .optionCheck { width:17px; height:17px; border-radius:50%; display:grid; place-items:center; font-size:10px; opacity:0; transform:scale(.6); background:rgba(127,127,127,.14); transition:.16s ease; }
       .countOption.active { background:rgba(127,127,127,.09); }
       .countOption.active .optionCheck { opacity:.75; transform:scale(1); }
@@ -784,7 +788,7 @@
           <div class="brand"><b>Chat Deck</b><span>分批读取 · 本地缓存 · 手动按需加载</span></div>
           <input class="search" placeholder="搜索已加载的标题或正文…" />
           <button class="modeToggle" data-act="toggleAutoExpand" type="button" aria-pressed="true" title="切换卡片展开方式"><span class="modeLabel">自动展开</span><span class="modeSwitch" aria-hidden="true"></span></button>
-          <button class="btn" data-act="selectVisible">选择当前</button>
+          <button class="btn" data-act="selectVisible">全选</button>
           <button class="btn close" data-act="close" title="关闭">×</button>
         </header>
         <div class="rateBanner" role="alert" aria-live="assertive">
@@ -797,16 +801,16 @@
           <div class="loadGroup">
             <div class="loadCombo">
               <button class="loadCountBtn" data-act="loadCount" type="button" title="从尚未读取正文的卡片开始继续加载">
-                <span class="loadButtonCopy"><b class="loadCountLabel">加载 10 个</b><span class="loadSpeedMeta">慢速 · 已加载自动跳过</span></span>
+                <span class="loadButtonCopy"><b class="loadCountLabel">加载 10 个对话内容</b><span class="loadSpeedMeta">慢速 · 已加载自动跳过</span></span>
               </button>
               <button class="countToggle" data-act="toggleCountMenu" type="button" aria-label="加载设置" aria-expanded="false"><span class="chevron"></span></button>
               <div class="countMenu" role="menu" aria-label="批量加载设置">
                 <div class="menuSectionLabel">加载数量</div>
-                <button class="countOption active" data-count="10" role="menuitem" type="button"><span class="optionCopy"><b>10 个</b><small>处理一小批对话</small></span><span class="optionCheck">✓</span></button>
-                <button class="countOption" data-count="30" role="menuitem" type="button"><span class="optionCopy"><b>30 个</b><small>适合连续整理</small></span><span class="optionCheck">✓</span></button>
-                <button class="countOption" data-count="50" role="menuitem" type="button"><span class="optionCopy"><b>50 个</b><small>中等批次</small></span><span class="optionCheck">✓</span></button>
-                <button class="countOption" data-count="100" role="menuitem" type="button"><span class="optionCopy"><b>100 个</b><small>较长批次</small></span><span class="optionCheck">✓</span></button>
-                <button class="countOption" data-count="all" role="menuitem" type="button"><span class="optionCopy"><b>全部</b><small>读取剩余全部对话</small></span><span class="optionCheck">✓</span></button>
+                <button class="countOption active" data-count="10" role="menuitem" type="button"><span class="optionCopy"><b>10</b></span><span class="optionCheck">✓</span></button>
+                <button class="countOption" data-count="30" role="menuitem" type="button"><span class="optionCopy"><b>30</b></span><span class="optionCheck">✓</span></button>
+                <button class="countOption" data-count="50" role="menuitem" type="button"><span class="optionCopy"><b>50</b></span><span class="optionCheck">✓</span></button>
+                <button class="countOption" data-count="100" role="menuitem" type="button"><span class="optionCopy"><b>100</b></span><span class="optionCheck">✓</span></button>
+                <button class="countOption" data-count="all" role="menuitem" type="button"><span class="optionCopy"><b>全部</b></span><span class="optionCheck">✓</span></button>
                 <div class="menuDivider"></div>
                 <div class="speedEntry">
                   <button class="speedOptionTrigger" data-act="toggleSpeedMenu" role="menuitem" type="button"><span><b>加载速度</b></span><span class="speedCurrent">慢</span></button>
@@ -818,7 +822,7 @@
                 </div>
               </div>
             </div>
-            <button class="btn" data-act="loadMore">加载更多列表</button>
+            <button class="btn" data-act="loadMore">加载更多对话卡片</button>
           </div>
           <div class="toolbarSep"></div>
           <button class="btn" data-act="archive">归档所选</button>
@@ -853,6 +857,7 @@
   const $ = (s) => root.querySelector(s);
   const panel = $('.panel');
   const overlay = $('.overlay');
+  const launcher = $('.launcher');
   const grid = $('.grid');
   const content = $('.content');
   const search = $('.search');
@@ -1074,6 +1079,96 @@
     a.remove();
   }
 
+
+  function panelLauncherOrigin() {
+    const pr = panel.getBoundingClientRect();
+    const lr = launcher.getBoundingClientRect();
+    return {
+      x: (lr.left + lr.width / 2) - pr.left,
+      y: (lr.top + lr.height / 2) - pr.top,
+      scale: Math.max(.035, Math.min(.075, Math.max(lr.width / Math.max(1, pr.width), lr.height / Math.max(1, pr.height))))
+    };
+  }
+
+  async function setPanelOpen(open) {
+    if (state.panelAnimating || (!!open === state.opened && !state.panelAnimating)) return;
+    state.panelAnimating = true;
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    if (open) {
+      state.opened = true;
+      overlay.classList.add('open');
+      updateRateBanner();
+      const origin = panelLauncherOrigin();
+      panel.style.transformOrigin = `${origin.x}px ${origin.y}px`;
+      if (!reduced && typeof panel.animate === 'function') {
+        const panelAnim = panel.animate([
+          { transform:`translate3d(0,0,0) scale(${origin.scale})`, opacity:.12 },
+          { transform:'translate3d(0,0,0) scale(1)', opacity:1 }
+        ], { duration:360, easing:'cubic-bezier(.16,1,.3,1)', fill:'both' });
+        const veilAnim = overlay.animate([{opacity:0},{opacity:1}], { duration:220, easing:'ease-out', fill:'both' });
+        await Promise.allSettled([panelAnim.finished, veilAnim.finished]);
+        try { panelAnim.cancel(); veilAnim.cancel(); } catch (_) {}
+      }
+      panel.style.transform = 'none';
+      panel.style.opacity = '1';
+      state.panelAnimating = false;
+      if (!state.chats.length) loadNextBatch();
+      scheduleIdlePrefetch();
+      return;
+    }
+
+    closeDeletePopover();
+    closeImageViewer();
+    collapseExpanded(true);
+    setCountMenu(false);
+    setSpeedMenu(false);
+    const origin = panelLauncherOrigin();
+    panel.style.transformOrigin = `${origin.x}px ${origin.y}px`;
+    if (!reduced && typeof panel.animate === 'function') {
+      const panelAnim = panel.animate([
+        { transform:'translate3d(0,0,0) scale(1)', opacity:1 },
+        { transform:`translate3d(0,0,0) scale(${origin.scale})`, opacity:.08 }
+      ], { duration:270, easing:'cubic-bezier(.4,0,.2,1)', fill:'both' });
+      const veilAnim = overlay.animate([{opacity:1},{opacity:0}], { duration:210, easing:'ease-in', fill:'both' });
+      await Promise.allSettled([panelAnim.finished, veilAnim.finished]);
+      try { panelAnim.cancel(); veilAnim.cancel(); } catch (_) {}
+    }
+    state.opened = false;
+    overlay.classList.remove('open');
+    panel.style.transform = 'none';
+    panel.style.opacity = '1';
+    state.panelAnimating = false;
+  }
+
+  function markUserActivity() {
+    state.lastUserActivityAt = Date.now();
+    const hadIdleJobs = state.queue.some(item => item.source === 'background');
+    if (hadIdleJobs) {
+      state.queue = state.queue.filter(item => item.source !== 'background');
+      clearTimeout(state.queueTimer);
+      pumpQueue();
+    }
+  }
+
+  function nextIdlePrefetchId() {
+    return state.chats.find(c => c?.id && !state.details.has(c.id) && !state.detailPromises.has(c.id) && !state.loadingIds.has(c.id) && !state.manualPendingIds.has(c.id) && !state.queue.some(q => q.id === c.id))?.id || null;
+  }
+
+  function maybeIdlePrefetch() {
+    if (!state.opened || document.hidden || state.panelAnimating || state.manualLoading || state.working || state.expandedId) return;
+    const now = Date.now();
+    if (now - state.lastUserActivityAt < IDLE_PREFETCH_AFTER_MS) return;
+    if (now < Math.max(state.rateLimitUntil, sharedNumber('chatdeck:rateLimitUntil'), state.prefetchDisabledUntil)) return;
+    const id = nextIdlePrefetchId();
+    if (id) enqueueDetail(id, 'background');
+  }
+
+  function scheduleIdlePrefetch() {
+    if (state.idlePrefetchTimer) return;
+    state.idlePrefetchTimer = setInterval(maybeIdlePrefetch, IDLE_PREFETCH_TICK_MS);
+  }
+
   async function getToken() {
     if (state.token) return state.token;
     const res = await fetch('/api/auth/session', { credentials: 'include' });
@@ -1128,9 +1223,9 @@
   }
 
   function formatDateMs(ms, detailed = false) {
-    if (!ms) return detailed ? '创建时间暂未返回' : '创建时间读取中…';
+    if (!ms) return detailed ? '时间暂未返回' : '时间读取中…';
     const d = new Date(ms);
-    if (Number.isNaN(+d)) return detailed ? '创建时间暂未返回' : '创建时间读取中…';
+    if (Number.isNaN(+d)) return detailed ? '时间暂未返回' : '时间读取中…';
     const now = new Date();
     const sameYear = d.getFullYear() === now.getFullYear();
     const options = detailed
@@ -1401,7 +1496,7 @@
       state.loadingList = false;
       listSentinel?.classList.remove('show');
       loadMoreBtn.disabled = state.offset >= state.total;
-      loadMoreBtn.textContent = state.offset >= state.total && state.total ? '已全部加载' : '加载更多列表';
+      loadMoreBtn.textContent = state.offset >= state.total && state.total ? '已全部加载' : '加载更多对话卡片';
       updateStats();
       return loadedCount;
     }
@@ -1854,7 +1949,7 @@
   function setCountChoice(value) {
     const allowed = new Set(['10','30','50','100','all']);
     state.loadCountChoice = allowed.has(String(value)) ? String(value) : '10';
-    loadCountLabel.textContent = state.loadCountChoice === 'all' ? '加载全部' : `加载 ${state.loadCountChoice} 个`;
+    loadCountLabel.textContent = state.loadCountChoice === 'all' ? '加载全部对话内容' : `加载 ${state.loadCountChoice} 个对话内容`;
     countMenu.querySelectorAll('.countOption').forEach(btn => btn.classList.toggle('active', btn.dataset.count === state.loadCountChoice));
   }
 
@@ -2109,7 +2204,7 @@
             <label class="checkWrap" title="选择对话"><input class="check" type="checkbox" ${selected ? 'checked' : ''} aria-label="选择对话" /><span class="checkBox"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 8.2 6.5 11.3 12.9 4.8" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></label>
             <div class="titleWrap">
               <div class="title" title="双击打开原对话">${escapeAttr(c.title || '无标题对话')}</div>
-              <div class="meta"><span class="createdAt" title="${escapeAttr(formatDateMs(createdAt, true))}">创建 ${escapeAttr(formatDateMs(createdAt))}</span><span class="metaSep ${metaHidden}">·</span><span class="count ${metaHidden}">${count}</span><span class="contentState ${loadState.cls}">${chipHtml}</span></div>
+              <div class="meta"><span class="createdAt" title="${escapeAttr(formatDateMs(createdAt, true))}">${escapeAttr(formatDateMs(createdAt))}</span><span class="metaSep ${metaHidden}">·</span><span class="count ${metaHidden}">${count}</span><span class="contentState ${loadState.cls}">${chipHtml}</span></div>
             </div>
             <div class="cardActions">
               <button class="mini jump" data-act="openConversation" title="在新标签页打开原对话" aria-label="在新标签页打开原对话"><svg viewBox="0 0 20 20"><path d="M8 4H5.5A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16h9a1.5 1.5 0 0 0 1.5-1.5V12"/><path d="M11 4h5v5M16 4l-7 7"/></svg></button>
@@ -2232,7 +2327,7 @@
     const timeEl = card.querySelector('.createdAt');
     if (timeEl) {
       const ms = getCreatedAt(chat);
-      timeEl.textContent = `创建 ${formatDateMs(ms)}`;
+      timeEl.textContent = formatDateMs(ms);
       timeEl.title = formatDateMs(ms, true);
     }
 
@@ -2265,7 +2360,7 @@
 
   function updateStats() {
     const visible = filteredChats().length;
-    const safe = !AUTO_BACKGROUND_PREFETCH ? '自动预读关闭' : (Date.now() < state.prefetchDisabledUntil ? '后台预读已暂停' : '安全预读');
+    const safe = Date.now() < state.prefetchDisabledUntil ? '空闲预读已暂停' : '空闲慢速预读';
     stats.textContent = `列表 ${state.chats.length}${state.total ? ` / ${state.total}` : ''} · 当前 ${visible} · 缓存命中 ${state.cacheHits} · ${safe} · 已选 ${state.selected.size}`;
     const rateCooling = Date.now() < Math.max(state.rateLimitUntil, sharedNumber('chatdeck:rateLimitUntil'));
     archiveBtn.disabled = deleteBtn.disabled = state.selected.size === 0 || state.working || state.manualLoading || rateCooling;
@@ -2598,6 +2693,7 @@
   }
 
   root.addEventListener('click', (e) => {
+    markUserActivity();
     if (state.suppressNextClick) {
       state.suppressNextClick = false;
       e.preventDefault();
@@ -2605,11 +2701,11 @@
     }
     const act = e.target.closest('[data-act]')?.dataset.act;
     if (e.target.closest('.launcher')) {
-      state.opened = true; overlay.classList.add('open'); updateRateBanner();
-      if (!state.chats.length) loadNextBatch();
+      markUserActivity();
+      setPanelOpen(!state.opened);
       return;
     }
-    if (act === 'close') { closeDeletePopover(); closeImageViewer(); collapseExpanded(true); state.opened = false; overlay.classList.remove('open'); return; }
+    if (act === 'close') { markUserActivity(); setPanelOpen(false); return; }
     if (act === 'toggleAutoExpand') { setAutoExpand(!state.autoExpand); return; }
     if (act === 'loadMore') { loadNextBatch(); return; }
     if (act === 'toggleCountMenu') { if (!countToggle.disabled) setCountMenu(!state.countMenuOpen); return; }
@@ -2693,6 +2789,7 @@
   });
 
   root.addEventListener('pointerover', (e) => {
+    markUserActivity();
     if (!state.autoExpand) return;
     const card = e.target.closest('.card');
     if (!card) return;
@@ -2718,6 +2815,7 @@
   applySpeedChoice(LOAD_SPEEDS[state.loadSpeedChoice] ? state.loadSpeedChoice : 'slow');
 
   root.addEventListener('pointerdown', (e) => {
+    markUserActivity();
     if (state.countMenuOpen && !e.target.closest('.loadCombo')) setCountMenu(false);
     if (state.deletePopoverOpen && !e.target.closest('.deletePopover') && !e.target.closest('[data-act="singleDelete"], [data-act="delete"]')) {
       closeDeletePopover();
@@ -2738,6 +2836,7 @@
 
   let searchRenderTimer = null;
   search.addEventListener('input', () => {
+    markUserActivity();
     state.query = search.value;
     clearTimeout(searchRenderTimer);
     searchRenderTimer = setTimeout(() => { render(); observeCards(); }, 120);
@@ -2745,6 +2844,7 @@
 
   let scrollLoadTimer = null;
   content.addEventListener('scroll', () => {
+    markUserActivity();
     if (state.expandedId && state.autoExpand) collapseExpanded(true);
     clearTimeout(scrollLoadTimer);
     // Detail loading and list pagination are separate lanes. A long “加载 N 个” job must not freeze infinite scrolling.
@@ -2755,12 +2855,13 @@
   }, { passive:true });
 
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden && state.opened) pumpQueue();
+    if (!document.hidden && state.opened) { markUserActivity(); pumpQueue(); scheduleIdlePrefetch(); }
   });
 
   updateRateBanner();
   setInterval(() => { if (Date.now() < Math.max(state.rateLimitUntil, sharedNumber('chatdeck:rateLimitUntil'))) updateRateBanner(); }, 1000);
   openCacheDb().catch(() => {});
+  scheduleIdlePrefetch();
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && state.imageViewerOpen) {
@@ -2770,11 +2871,8 @@
     }
     if ((e.altKey || e.metaKey) && e.key.toLowerCase() === 'm') {
       e.preventDefault();
-      state.opened = !state.opened;
-      overlay.classList.toggle('open', state.opened);
-      if (state.opened) updateRateBanner();
-      if (!state.opened) { closeDeletePopover(); collapseExpanded(true); }
-      if (state.opened && !state.chats.length) loadNextBatch();
+      markUserActivity();
+      setPanelOpen(!state.opened);
     }
     if (e.key === 'Escape' && state.opened) {
       if (state.deletePopoverOpen) closeDeletePopover();
@@ -2782,7 +2880,7 @@
       else if (state.speedMenuOpen) setSpeedMenu(false);
       else if (state.countMenuOpen) setCountMenu(false);
       else if (state.expandedId) collapseExpanded(true);
-      else { state.opened = false; overlay.classList.remove('open'); }
+      else setPanelOpen(false);
     }
   });
 })();
