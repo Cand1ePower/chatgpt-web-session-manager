@@ -58,6 +58,8 @@
     manualFailed: 0,
     manualTotal: 0,
     manualLabel: '',
+    loadCountChoice: '10',
+    countMenuOpen: false,
   };
 
   const host = document.createElement('div');
@@ -179,6 +181,30 @@
       .card.selected .cardSurface { outline:2px solid currentColor; outline-offset:1px; }
       .card.deleted .cardSurface { opacity:.25; transform:scale(.97); pointer-events:none; }
 
+      /* Unloaded conversations are intentionally more recognizable at a glance. */
+      .card.unloaded .cardSurface {
+        border-color:rgba(108,108,112,.24);
+        background-image:linear-gradient(135deg, rgba(127,127,127,.026) 0, rgba(127,127,127,.026) 1px, transparent 1px, transparent 13px);
+        background-size:14px 14px;
+      }
+      .card.unloaded .cardSurface::before {
+        content:""; position:absolute; inset:0; pointer-events:none; border-radius:inherit;
+        box-shadow:inset 3px 0 0 rgba(92,92,98,.20); opacity:.9;
+      }
+      .card.unloaded:not(.expanded):not(.morphing):not(.collapsing) .cardSurface:hover {
+        border-color:rgba(92,92,98,.35); box-shadow:0 9px 28px rgba(0,0,0,.07);
+      }
+      .card.contentLoading .cardSurface::before {
+        box-shadow:inset 3px 0 0 rgba(92,92,98,.42);
+        animation:edgePulse 1.1s ease-in-out infinite alternate;
+      }
+      @keyframes edgePulse { from { opacity:.38 } to { opacity:1 } }
+      @media (prefers-color-scheme: dark) {
+        .card.unloaded .cardSurface { border-color:rgba(255,255,255,.17); background-image:linear-gradient(135deg, rgba(255,255,255,.022) 0, rgba(255,255,255,.022) 1px, transparent 1px, transparent 13px); }
+        .card.unloaded .cardSurface::before { box-shadow:inset 3px 0 0 rgba(255,255,255,.16); }
+        .card.contentLoading .cardSurface::before { box-shadow:inset 3px 0 0 rgba(255,255,255,.36); }
+      }
+
       .focusVeil {
         position:absolute; left:0; right:0; top:76px; bottom:64px; z-index:20;
         opacity:0; pointer-events:none;
@@ -194,8 +220,19 @@
       .check { width:18px; height:18px; margin:2px 0 0; accent-color:#111; cursor:pointer; }
       .titleWrap { min-width:0; }
       .title { font-size:14px; line-height:1.35; font-weight:680; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:pointer; }
-      .meta { display:flex; gap:7px; margin-top:6px; font-size:11px; opacity:.56; white-space:nowrap; overflow:hidden; }
+      .meta { display:flex; gap:7px; margin-top:6px; font-size:11px; opacity:.62; white-space:nowrap; overflow:hidden; align-items:center; }
       .meta .createdAt { overflow:hidden; text-overflow:ellipsis; }
+      .contentState {
+        display:inline-flex; align-items:center; gap:5px; flex:0 0 auto; height:20px; padding:0 7px; margin-left:1px;
+        border-radius:999px; font-size:9.8px; font-weight:720; letter-spacing:.01em; opacity:1;
+        background:rgba(127,127,127,.105); box-shadow:inset 0 0 0 1px rgba(127,127,127,.12);
+      }
+      .contentState i { width:6px; height:6px; border-radius:50%; background:currentColor; opacity:.38; }
+      .contentState.pending { background:rgba(127,127,127,.12); box-shadow:inset 0 0 0 1px rgba(127,127,127,.20); }
+      .contentState.loading { background:rgba(127,127,127,.17); box-shadow:inset 0 0 0 1px rgba(127,127,127,.24); }
+      .contentState.loading i { opacity:.85; animation:statePulse .78s ease-in-out infinite alternate; }
+      .contentState.ready { opacity:.48; background:transparent; box-shadow:none; padding-left:2px; padding-right:2px; }
+      @keyframes statePulse { from { transform:scale(.72); opacity:.38 } to { transform:scale(1.2); opacity:1 } }
       .mini { border:0; background:transparent; color:inherit; width:26px; height:26px; border-radius:8px; cursor:pointer; opacity:.55; }
       .mini:hover { background:rgba(127,127,127,.12); opacity:1; }
 
@@ -209,9 +246,11 @@
       }
 
       .waitingPreview { padding:3px 14px 14px 42px; height:98px; display:flex; flex-direction:column; justify-content:center; gap:8px; transition:opacity .16s ease, transform .24s cubic-bezier(.16,1,.3,1); }
-      .waitingLine { font-size:11px; opacity:.52; display:flex; align-items:center; gap:7px; }
-      .waitingDot { width:7px; height:7px; border-radius:50%; background:currentColor; opacity:.28; }
-      .waitingHint { font-size:10.5px; line-height:1.45; opacity:.38; }
+      .waitingLine { font-size:11px; opacity:.72; display:flex; align-items:center; gap:8px; font-weight:620; }
+      .waitingDot { width:8px; height:8px; border-radius:50%; background:transparent; border:1.5px solid currentColor; opacity:.42; box-shadow:0 0 0 3px rgba(127,127,127,.07); }
+      .waitingHint { font-size:10.5px; line-height:1.45; opacity:.46; max-width:96%; }
+      .waitingAction { display:inline-flex; align-items:center; gap:5px; width:max-content; margin-top:1px; font-size:9.8px; opacity:.46; }
+      .waitingAction::before { content:"↗"; font-size:10px; }
       .loadingPreview { padding:1px 14px 14px 42px; height:98px; transition:opacity .16s ease, transform .24s cubic-bezier(.16,1,.3,1); }
       .loadingStatus { display:flex; align-items:center; gap:7px; font-size:11px; opacity:.58; margin-bottom:10px; }
       .spinner { width:13px; height:13px; border:1.5px solid rgba(127,127,127,.28); border-top-color:currentColor; border-radius:50%; animation:spin .75s linear infinite; opacity:.72; }
@@ -258,12 +297,57 @@
       .msgToggle:hover { opacity:.9; }
       .moreHint { padding:8px; text-align:center; font-size:10.5px; opacity:.42; }
 
-      .footer { min-height:64px; padding:11px 16px; border-top:1px solid rgba(127,127,127,.18); display:flex; align-items:center; gap:9px; flex-wrap:wrap; }
-      .loadGroup { display:flex; align-items:center; gap:6px; }
-      .countSelect { height:40px; min-width:68px; border:0; outline:none; border-radius:12px; padding:0 28px 0 10px; color:inherit; background:rgba(127,127,127,.11); box-shadow:inset 0 0 0 1px rgba(127,127,127,.08); cursor:pointer; }
-      .countSelect:hover { background:rgba(127,127,127,.16); }
+      .listSentinel {
+        height:0; overflow:hidden; display:flex; align-items:center; justify-content:center; gap:8px;
+        font-size:10.8px; opacity:0; transform:translateY(4px); transition:height .22s ease, opacity .18s ease, transform .22s cubic-bezier(.16,1,.3,1);
+      }
+      .listSentinel.show { height:42px; opacity:.58; transform:translateY(0); }
+      .listDots { display:flex; gap:3px; align-items:center; }
+      .listDots i { width:4px; height:4px; border-radius:50%; background:currentColor; opacity:.35; animation:listDot .9s ease-in-out infinite alternate; }
+      .listDots i:nth-child(2) { animation-delay:.14s; } .listDots i:nth-child(3) { animation-delay:.28s; }
+      @keyframes listDot { to { transform:translateY(-3px); opacity:.9 } }
+
+      .footer { min-height:64px; padding:11px 16px; border-top:1px solid rgba(127,127,127,.18); display:flex; align-items:center; gap:9px; flex-wrap:wrap; overflow:visible; }
+      .loadGroup { display:flex; align-items:center; gap:8px; position:relative; }
+      .loadCombo { position:relative; display:flex; align-items:stretch; min-width:222px; height:42px; border-radius:13px; background:rgba(127,127,127,.10); box-shadow:inset 0 0 0 1px rgba(127,127,127,.11), 0 3px 12px rgba(0,0,0,.025); transition:background .18s ease, box-shadow .18s ease, transform .18s ease; }
+      .loadCombo:hover { background:rgba(127,127,127,.14); box-shadow:inset 0 0 0 1px rgba(127,127,127,.17), 0 5px 16px rgba(0,0,0,.045); }
+      .loadCombo.busy { background:rgba(127,127,127,.13); }
+      .loadCountBtn {
+        min-width:0; flex:1; border:0; background:transparent; color:inherit; cursor:pointer; border-radius:13px 0 0 13px;
+        padding:0 12px; display:flex; align-items:center; gap:9px; text-align:left; font-weight:650;
+      }
+      .loadCountBtn:disabled, .countToggle:disabled { opacity:.42; cursor:not-allowed; }
+      .loadOrb { width:9px; height:9px; border-radius:50%; flex:0 0 auto; border:1.5px solid currentColor; opacity:.45; transition:.2s ease; }
+      .loadCombo:hover .loadOrb { opacity:.75; transform:scale(1.08); }
+      .loadCombo.busy .loadOrb { border-top-color:transparent; opacity:.8; animation:spin .72s linear infinite; }
+      .loadButtonCopy { min-width:0; display:flex; flex-direction:column; line-height:1.12; }
+      .loadButtonCopy b { font-size:11.5px; font-weight:700; white-space:nowrap; }
+      .loadButtonCopy span { margin-top:3px; font-size:9.5px; font-weight:500; opacity:.48; white-space:nowrap; }
+      .countToggle { width:40px; flex:0 0 40px; border:0; border-left:1px solid rgba(127,127,127,.13); background:transparent; color:inherit; cursor:pointer; border-radius:0 13px 13px 0; display:grid; place-items:center; }
+      .chevron { width:8px; height:8px; border-right:1.5px solid currentColor; border-bottom:1.5px solid currentColor; transform:rotate(45deg) translate(-1px,-1px); opacity:.55; transition:transform .28s cubic-bezier(.16,1,.3,1), opacity .18s ease; }
+      .loadCombo.menuOpen .chevron { transform:rotate(225deg) translate(-1px,-1px); opacity:.9; }
+      .countMenu {
+        position:absolute; z-index:140; right:0; bottom:calc(100% + 9px); width:222px; padding:6px;
+        border-radius:15px; border:1px solid rgba(127,127,127,.18); background:rgba(248,248,247,.96);
+        box-shadow:0 18px 50px rgba(0,0,0,.18); backdrop-filter:blur(22px); -webkit-backdrop-filter:blur(22px);
+        opacity:0; visibility:hidden; pointer-events:none; transform:translateY(8px) scale(.96); transform-origin:85% 100%;
+        transition:opacity .16s ease, transform .26s cubic-bezier(.16,1,.3,1), visibility 0s linear .26s;
+      }
+      .loadCombo.menuOpen .countMenu { opacity:1; visibility:visible; pointer-events:auto; transform:translateY(0) scale(1); transition:opacity .16s ease, transform .26s cubic-bezier(.16,1,.3,1), visibility 0s; }
+      @media (prefers-color-scheme: dark) { .countMenu { background:rgba(34,34,36,.97); border-color:rgba(255,255,255,.12); } }
+      .countOption {
+        width:100%; min-height:38px; padding:7px 9px; border:0; border-radius:10px; color:inherit; background:transparent; cursor:pointer;
+        display:grid; grid-template-columns:1fr auto; align-items:center; gap:8px; text-align:left; transition:background .14s ease, transform .14s ease;
+      }
+      .countOption:hover { background:rgba(127,127,127,.12); transform:translateX(2px); }
+      .countOption .optionCopy { display:flex; flex-direction:column; min-width:0; }
+      .countOption b { font-size:11.5px; font-weight:680; }
+      .countOption small { margin-top:2px; font-size:9.4px; opacity:.44; }
+      .countOption .optionCheck { width:17px; height:17px; border-radius:50%; display:grid; place-items:center; font-size:10px; opacity:0; transform:scale(.6); background:rgba(127,127,127,.14); transition:.16s ease; }
+      .countOption.active { background:rgba(127,127,127,.09); }
+      .countOption.active .optionCheck { opacity:.75; transform:scale(1); }
       .stats { margin-right:auto; font-size:12px; opacity:.62; }
-      .progress { font-size:12px; min-width:150px; text-align:right; opacity:.66; }
+      .progress { font-size:12px; min-width:150px; text-align:right; opacity:.66; transition:opacity .18s ease; }
       .toolbarSep { width:1px; height:26px; background:rgba(127,127,127,.18); }
       .toast { position:absolute; z-index:90; left:50%; bottom:78px; transform:translateX(-50%) translateY(12px); padding:10px 13px; border-radius:12px; background:#171719; color:#fff; font-size:12px; opacity:0; pointer-events:none; transition:.22s ease; box-shadow:0 10px 34px rgba(0,0,0,.25); }
       .toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
@@ -281,16 +365,24 @@
         <div class="rateBanner" role="alert" aria-live="assertive">
           <div class="rateInner"><div class="rateIcon">!</div><div class="rateCopy"><b>请求过多，请稍后再试</b><span class="rateDetail">ChatGPT 暂时限制了请求。本地已缓存内容仍可正常浏览。</span></div></div>
         </div>
-        <main class="content"><div class="grid"></div></main>
+        <main class="content"><div class="grid"></div><div class="listSentinel" aria-live="polite"><span class="listDots"><i></i><i></i><i></i></span><span>正在继续加载卡片列表…</span></div></main>
         <div class="focusVeil"></div>
         <footer class="footer">
           <div class="stats">尚未加载</div>
           <div class="loadGroup">
-            <button class="btn" data-act="loadCurrent">加载当前页</button>
-            <select class="countSelect" aria-label="批量加载数量">
-              <option value="10" selected>10</option><option value="30">30</option><option value="50">50</option><option value="100">100</option><option value="all">全部</option>
-            </select>
-            <button class="btn primary" data-act="loadCount">加载 10 个</button>
+            <div class="loadCombo">
+              <button class="loadCountBtn" data-act="loadCount" type="button" title="从当前未加载的卡片开始继续读取正文">
+                <span class="loadOrb"></span><span class="loadButtonCopy"><b class="loadCountLabel">加载 10 个未加载</b><span>已加载的会自动跳过</span></span>
+              </button>
+              <button class="countToggle" data-act="toggleCountMenu" type="button" aria-label="选择加载数量" aria-expanded="false"><span class="chevron"></span></button>
+              <div class="countMenu" role="menu" aria-label="选择批量读取数量">
+                <button class="countOption active" data-count="10" role="menuitem" type="button"><span class="optionCopy"><b>10 个</b><small>快速补全一小批</small></span><span class="optionCheck">✓</span></button>
+                <button class="countOption" data-count="30" role="menuitem" type="button"><span class="optionCopy"><b>30 个</b><small>适合连续整理</small></span><span class="optionCheck">✓</span></button>
+                <button class="countOption" data-count="50" role="menuitem" type="button"><span class="optionCopy"><b>50 个</b><small>较大批次，保持限速</small></span><span class="optionCheck">✓</span></button>
+                <button class="countOption" data-count="100" role="menuitem" type="button"><span class="optionCopy"><b>100 个</b><small>长批次后台顺序读取</small></span><span class="optionCheck">✓</span></button>
+                <button class="countOption" data-count="all" role="menuitem" type="button"><span class="optionCopy"><b>全部未加载</b><small>先补全列表，再读取剩余正文</small></span><span class="optionCheck">✓</span></button>
+              </div>
+            </div>
             <button class="btn" data-act="loadMore">加载更多列表</button>
           </div>
           <div class="toolbarSep"></div>
@@ -313,9 +405,12 @@
   const progress = $('.progress');
   const toast = $('.toast');
   const loadMoreBtn = $('[data-act="loadMore"]');
-  const loadCurrentBtn = $('[data-act="loadCurrent"]');
   const loadCountBtn = $('[data-act="loadCount"]');
-  const countSelect = $('.countSelect');
+  const loadCountLabel = $('.loadCountLabel');
+  const loadCombo = $('.loadCombo');
+  const countToggle = $('[data-act="toggleCountMenu"]');
+  const countMenu = $('.countMenu');
+  const listSentinel = $('.listSentinel');
   const rateBanner = $('.rateBanner');
   const rateDetail = $('.rateDetail');
   const archiveBtn = $('[data-act="archive"]');
@@ -612,6 +707,7 @@
     if (state.loadingList || (state.offset >= state.total && state.total !== 0)) return;
     state.loadingList = true;
     loadMoreBtn.disabled = true;
+    listSentinel?.classList.add('show');
     updateStats();
     loadMoreBtn.textContent = '读取中…';
     let loadedCount = 0;
@@ -641,6 +737,7 @@
       showToast(err.message || '读取失败');
     } finally {
       state.loadingList = false;
+      listSentinel?.classList.remove('show');
       loadMoreBtn.disabled = state.offset >= state.total;
       loadMoreBtn.textContent = state.offset >= state.total && state.total ? '已全部加载' : '加载更多列表';
       updateStats();
@@ -715,11 +812,17 @@
     const surface = card.querySelector('.cardSurface');
     const msgs = state.details.get(chatId);
     const isLoading = state.loadingIds.has(chatId);
+    const chip = card.querySelector('.contentState');
+    card.classList.toggle('unloaded', !msgs);
+    card.classList.toggle('loaded', !!msgs);
+    card.classList.toggle('contentLoading', !msgs && isLoading);
     if (msgs) {
       if (count) count.textContent = `${msgs.length} 条消息`;
+      if (chip) { chip.className = 'contentState ready'; chip.innerHTML = '<i></i><span>已加载</span>'; }
       return;
     }
-    if (count) count.textContent = isLoading ? '正在读取…' : '正文未缓存';
+    if (count) count.textContent = isLoading ? '正文读取中' : '等待读取';
+    if (chip) { chip.className = `contentState ${isLoading ? 'loading' : 'pending'}`; chip.innerHTML = `<i></i><span>${isLoading ? '读取中' : '未加载'}</span>`; }
     const current = surface?.querySelector('.preview, .loadingPreview, .waitingPreview');
     if (current && isLoading && !current.classList.contains('loadingPreview')) {
       const tmp = document.createElement('div'); tmp.innerHTML = loadingPreviewHTML(); current.replaceWith(tmp.firstElementChild);
@@ -899,31 +1002,52 @@
     pumpQueue();
   }
 
-  function visibleCardIds() {
-    const viewport = content.getBoundingClientRect();
-    return [...grid.querySelectorAll('.card')].filter(card => {
-      const r = card.getBoundingClientRect();
-      return r.bottom > viewport.top + 2 && r.top < viewport.bottom - 2 && r.right > viewport.left && r.left < viewport.right;
-    }).map(card => card.dataset.id).filter(Boolean);
+  async function ensureUnloadedCount(target) {
+    const wantAll = target === Infinity;
+    let guard = 0;
+    while (guard++ < 200) {
+      const candidates = filteredChats().filter(isUnloadedCandidate);
+      if (!wantAll && candidates.length >= target) break;
+      if (state.total && state.offset >= state.total) break;
+      const before = state.offset;
+      const got = await loadNextBatch(LIST_FETCH_MAX);
+      if (!got || state.offset <= before) break;
+    }
   }
 
-  async function loadCurrentPageDetails() {
-    collapseExpanded(true);
-    const ids = visibleCardIds();
-    await startManualDetailLoad(ids, '当前页');
+  function setCountChoice(value) {
+    const allowed = new Set(['10','30','50','100','all']);
+    state.loadCountChoice = allowed.has(String(value)) ? String(value) : '10';
+    const label = state.loadCountChoice === 'all' ? '加载全部未加载' : `加载 ${state.loadCountChoice} 个未加载`;
+    loadCountLabel.textContent = label;
+    countMenu.querySelectorAll('.countOption').forEach(btn => btn.classList.toggle('active', btn.dataset.count === state.loadCountChoice));
+  }
+
+  function setCountMenu(open) {
+    state.countMenuOpen = !!open;
+    loadCombo.classList.toggle('menuOpen', state.countMenuOpen);
+    countToggle.setAttribute('aria-expanded', state.countMenuOpen ? 'true' : 'false');
   }
 
   async function loadCountDetails() {
     collapseExpanded(true);
-    const raw = countSelect.value;
+    const raw = state.loadCountChoice;
     const wantAll = raw === 'all';
     const count = wantAll ? Infinity : Number(raw || 10);
+    setCountMenu(false);
     loadCountBtn.disabled = true;
     try {
-      if (!state.query.trim()) await ensureListCount(count);
-      const list = filteredChats();
-      const ids = wantAll ? list.map(c => c.id) : list.slice(0, count).map(c => c.id);
-      await startManualDetailLoad(ids, wantAll ? '全部读取' : `读取 ${Math.min(count, ids.length)} 个`);
+      // Important: N means N conversations whose content is not loaded yet, not the first N cards.
+      // If the currently fetched list does not contain enough unloaded cards, fetch more list metadata first.
+      await ensureUnloadedCount(count);
+      const candidates = filteredChats().filter(isUnloadedCandidate);
+      const chosen = wantAll ? candidates : candidates.slice(0, count);
+      if (!chosen.length) {
+        showToast('当前没有未加载的对话');
+        return;
+      }
+      const ids = chosen.map(c => c.id);
+      await startManualDetailLoad(ids, wantAll ? '读取剩余全部' : `读取接下来的 ${ids.length} 个`);
     } finally {
       updateStats();
     }
@@ -959,8 +1083,9 @@
   function waitingPreviewHTML(id) {
     const err = state.detailErrors.get(id);
     return `<div class="waitingPreview">
-      <div class="waitingLine"><span class="waitingDot"></span><span>${escapeAttr(err || '悬停 0.5 秒展开并读取对话')}</span></div>
-      <div class="waitingHint">未缓存正文不会自动批量请求；可悬停读取，或使用底部“加载当前页 / 加载 N 个”。</div>
+      <div class="waitingLine"><span class="waitingDot"></span><span>${escapeAttr(err || '正文尚未加载')}</span></div>
+      <div class="waitingHint">悬停 0.5 秒可按需读取；批量“加载 N 个”会自动从未加载卡片继续。</div>
+      <div class="waitingAction">未加载卡片</div>
     </div>`;
   }
 
@@ -992,6 +1117,19 @@
     </div>`;
   }
 
+  function cardLoadStatus(id) {
+    if (state.details.has(id)) return { cls:'ready', label:'已加载' };
+    if (state.loadingIds.has(id) || state.detailPromises.has(id) || state.manualPendingIds.has(id)) return { cls:'loading', label:'读取中' };
+    return { cls:'pending', label:'未加载' };
+  }
+
+  function isUnloadedCandidate(chat) {
+    if (!chat?.id || state.details.has(chat.id)) return false;
+    if (state.loadingIds.has(chat.id) || state.detailPromises.has(chat.id) || state.manualPendingIds.has(chat.id)) return false;
+    if (state.queue.some(item => item.id === chat.id)) return false;
+    return true;
+  }
+
   function render() {
     collapseExpanded(true);
     const list = filteredChats();
@@ -1004,14 +1142,15 @@
       const selected = state.selected.has(c.id);
       const msgs = state.details.get(c.id);
       const createdAt = getCreatedAt(c);
-      const count = msgs ? `${msgs.length} 条消息` : (state.loadingIds.has(c.id) ? '正在读取…' : '正文未缓存');
-      return `<article class="card ${selected ? 'selected' : ''}" data-id="${escapeAttr(c.id)}">
+      const loadState = cardLoadStatus(c.id);
+      const count = msgs ? `${msgs.length} 条消息` : (loadState.cls === 'loading' ? '正文读取中' : '等待读取');
+      return `<article class="card ${selected ? 'selected' : ''} ${msgs ? 'loaded' : 'unloaded'} ${loadState.cls === 'loading' ? 'contentLoading' : ''}" data-id="${escapeAttr(c.id)}">
         <div class="cardSurface">
           <div class="cardHead">
             <input class="check" type="checkbox" ${selected ? 'checked' : ''} aria-label="选择对话" />
             <div class="titleWrap">
               <div class="title" title="双击打开原对话">${escapeAttr(c.title || '无标题对话')}</div>
-              <div class="meta"><span class="createdAt" title="${escapeAttr(formatDateMs(createdAt, true))}">创建 ${escapeAttr(formatDateMs(createdAt))}</span><span>·</span><span class="count">${count}</span></div>
+              <div class="meta"><span class="createdAt" title="${escapeAttr(formatDateMs(createdAt, true))}">创建 ${escapeAttr(formatDateMs(createdAt))}</span><span>·</span><span class="count">${count}</span><span class="contentState ${loadState.cls}"><i></i><span>${loadState.label}</span></span></div>
             </div>
             <button class="mini" data-act="singleDelete" title="删除">×</button>
           </div>
@@ -1037,8 +1176,12 @@
     temp.innerHTML = previewHTML(msgs);
     oldPreview?.replaceWith(temp.firstElementChild);
 
+    card.classList.remove('unloaded', 'contentLoading');
+    card.classList.add('loaded');
     const count = card.querySelector('.count');
     if (count) count.textContent = `${msgs.length} 条消息`;
+    const chip = card.querySelector('.contentState');
+    if (chip) { chip.className = 'contentState ready'; chip.innerHTML = '<i></i><span>已加载</span>'; }
     const timeEl = card.querySelector('.createdAt');
     if (timeEl) {
       const ms = getCreatedAt(chat);
@@ -1116,10 +1259,12 @@
     stats.textContent = `列表 ${state.chats.length}${state.total ? ` / ${state.total}` : ''} · 当前 ${visible} · 缓存命中 ${state.cacheHits} · ${safe} · 已选 ${state.selected.size}`;
     const rateCooling = Date.now() < Math.max(state.rateLimitUntil, sharedNumber('chatdeck:rateLimitUntil'));
     archiveBtn.disabled = deleteBtn.disabled = state.selected.size === 0 || state.working || state.manualLoading || rateCooling;
-    loadCurrentBtn.disabled = state.working || state.manualLoading || state.loadingList || rateCooling;
     loadCountBtn.disabled = state.working || state.manualLoading || state.loadingList || rateCooling;
-    countSelect.disabled = state.working || state.manualLoading || state.loadingList || rateCooling;
-    loadMoreBtn.disabled = state.loadingList || state.manualLoading || rateCooling || (state.total > 0 && state.offset >= state.total);
+    countToggle.disabled = state.working || state.manualLoading || state.loadingList || rateCooling;
+    loadCombo.classList.toggle('busy', state.manualLoading);
+    // Conversation list pagination is intentionally independent from the detail queue.
+    // Users can keep scrolling and fetching more cards while a long detail batch is running.
+    loadMoreBtn.disabled = state.loadingList || rateCooling || (state.total > 0 && state.offset >= state.total);
   }
 
   function setSurfaceRect(surface, rect) {
@@ -1371,7 +1516,9 @@
     }
     if (act === 'close') { collapseExpanded(true); state.opened = false; overlay.classList.remove('open'); return; }
     if (act === 'loadMore') { loadNextBatch(); return; }
-    if (act === 'loadCurrent') { loadCurrentPageDetails(); return; }
+    if (act === 'toggleCountMenu') { if (!countToggle.disabled) setCountMenu(!state.countMenuOpen); return; }
+    const countOption = e.target.closest('.countOption');
+    if (countOption?.dataset.count) { setCountChoice(countOption.dataset.count); setCountMenu(false); return; }
     if (act === 'loadCount') { loadCountDetails(); return; }
     if (act === 'selectVisible') {
       const list = filteredChats();
@@ -1424,8 +1571,10 @@
     if (state.expandedId === card.dataset.id) collapseExpanded(false);
   });
 
-  countSelect.addEventListener('change', () => {
-    loadCountBtn.textContent = countSelect.value === 'all' ? '加载全部' : `加载 ${countSelect.value} 个`;
+  setCountChoice(state.loadCountChoice);
+
+  root.addEventListener('pointerdown', (e) => {
+    if (state.countMenuOpen && !e.target.closest('.loadCombo')) setCountMenu(false);
   });
 
   search.addEventListener('input', () => {
@@ -1437,9 +1586,10 @@
   content.addEventListener('scroll', () => {
     if (state.expandedId) collapseExpanded(true);
     clearTimeout(scrollLoadTimer);
-    if (state.loadingList || state.manualLoading || !state.total || state.offset >= state.total) return;
-    if (content.scrollTop + content.clientHeight > content.scrollHeight - 520) {
-      scrollLoadTimer = setTimeout(() => loadNextBatch(), 650);
+    // Detail loading and list pagination are separate lanes. A long “加载 N 个” job must not freeze infinite scrolling.
+    if (state.loadingList || !state.total || state.offset >= state.total) return;
+    if (content.scrollTop + content.clientHeight > content.scrollHeight - 680) {
+      scrollLoadTimer = setTimeout(() => loadNextBatch(), 260);
     }
   }, { passive:true });
 
@@ -1461,7 +1611,8 @@
       if (state.opened && !state.chats.length) loadNextBatch();
     }
     if (e.key === 'Escape' && state.opened) {
-      if (state.expandedId) collapseExpanded(true);
+      if (state.countMenuOpen) setCountMenu(false);
+      else if (state.expandedId) collapseExpanded(true);
       else { state.opened = false; overlay.classList.remove('open'); }
     }
   });

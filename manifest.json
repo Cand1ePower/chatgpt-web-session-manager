@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ChatGPT Card Manager",
-  "version": "0.7.0",
-  "description": "Card-based ChatGPT conversation manager with compositor-only origin morph animations, manual batch loading, local cache and conservative rate limiting.",
+  "version": "0.8.0",
+  "description": "Card-based ChatGPT conversation manager with independent list/detail loading, unloaded-state visuals, progressive batch loading, local cache and rate-limit protection.",
   "content_scripts": [
     {
       "matches": [
