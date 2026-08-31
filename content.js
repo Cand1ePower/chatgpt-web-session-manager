@@ -215,7 +215,35 @@
         opacity:0 !important; transform:translateY(6px) scale(.995) !important;
         pointer-events:none !important; transition:opacity .11s ease, transform .14s ease !important;
       }
-      .card.selected .cardSurface { outline:2px solid currentColor; outline-offset:1px; }
+      /* Selected cards use a monochrome flowing rim rather than a static native-looking outline. */
+      .card.selected .cardSurface {
+        outline:none;
+        border-color:rgba(92,92,98,.42);
+        box-shadow:0 8px 28px rgba(0,0,0,.09), inset 0 0 0 1px rgba(255,255,255,.34);
+      }
+      .card.selected .cardSurface::before {
+        content:""; position:absolute; inset:-1px; border-radius:inherit; padding:2px; pointer-events:none; z-index:8;
+        background:linear-gradient(115deg, #171719 0%, #66666b 16%, #f4f4f5 34%, #8d8d92 50%, #2e2e31 67%, #e6e6e8 84%, #171719 100%);
+        background-size:320% 320%;
+        -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+        -webkit-mask-composite:xor; mask-composite:exclude;
+        animation:selectedRimFlow 2.35s linear infinite;
+        opacity:.96; filter:contrast(1.06);
+      }
+      @keyframes selectedRimFlow {
+        0% { background-position:0% 50%; }
+        100% { background-position:220% 50%; }
+      }
+      @media (prefers-color-scheme: dark) {
+        .card.selected .cardSurface {
+          border-color:rgba(255,255,255,.34);
+          box-shadow:0 9px 30px rgba(0,0,0,.26), inset 0 0 0 1px rgba(255,255,255,.09);
+        }
+        .card.selected .cardSurface::before {
+          background:linear-gradient(115deg, #050506 0%, #737378 18%, #ffffff 36%, #8b8b90 52%, #171719 69%, #ededee 86%, #050506 100%);
+          background-size:320% 320%; opacity:1;
+        }
+      }
       .card.deleted .cardSurface { opacity:.25; transform:scale(.97); pointer-events:none; }
 
       /* Loaded conversations get a deliberate finished rim. Unloaded cards stay quiet and use placeholder lines. */
@@ -515,18 +543,25 @@
       .compactMedia[data-url] { cursor:zoom-in; }
 
       .imageViewer {
-        position:fixed; inset:0; z-index:2147483647; display:none; place-items:center; padding:24px;
+        position:fixed; inset:0; z-index:2147483647; display:none; place-items:center; padding:32px;
         background:rgba(5,5,7,.68); backdrop-filter:blur(9px); -webkit-backdrop-filter:blur(9px);
-        opacity:0; transition:opacity .18s ease; cursor:zoom-out;
+        opacity:0; transition:opacity .18s ease; cursor:zoom-out; overflow:hidden;
       }
       .imageViewer.show { display:grid; opacity:1; animation:imageViewerIn .2s cubic-bezier(.16,1,.3,1); }
       @keyframes imageViewerIn { from { opacity:0; } to { opacity:1; } }
       .imageViewerFrame {
-        width:min(60vw, 1280px); height:min(60vh, 860px); display:grid; place-items:center;
-        border-radius:18px; position:relative; cursor:zoom-out;
+        width:min(60vw, calc(100vw - 64px), 1280px);
+        height:min(60vh, calc(100vh - 64px), 860px);
+        max-width:calc(100vw - 64px); max-height:calc(100vh - 64px);
+        display:flex; align-items:center; justify-content:center;
+        border-radius:18px; position:relative; cursor:zoom-out; overflow:visible;
       }
       .imageViewerImage {
-        display:block; max-width:100%; max-height:100%; width:auto; height:auto; object-fit:contain;
+        display:block;
+        width:auto !important; height:auto !important;
+        max-width:min(60vw, calc(100vw - 64px), 1280px) !important;
+        max-height:min(60vh, calc(100vh - 64px), 860px) !important;
+        object-fit:contain !important; object-position:center center;
         border-radius:14px; cursor:default; user-select:none; -webkit-user-drag:none;
         box-shadow:0 28px 90px rgba(0,0,0,.46), 0 0 0 1px rgba(255,255,255,.09);
         opacity:0; transform:scale(.965); transition:opacity .18s ease, transform .24s cubic-bezier(.16,1,.3,1);
@@ -2335,6 +2370,9 @@
 
   root.addEventListener('pointerdown', (e) => {
     if (state.countMenuOpen && !e.target.closest('.loadCombo')) setCountMenu(false);
+    // The lightbox owns outside clicks while it is open. Do not let the underlying
+    // manual-expand handler interpret the same pointerdown as a request to collapse the card.
+    if (state.imageViewerOpen || e.target.closest('.imageViewer')) return;
     if (!state.autoExpand && state.expandedId) {
       const expandedCard = root.querySelector(`.card[data-id="${CSS.escape(state.expandedId)}"]`);
       const clickedCard = e.target.closest('.card');
@@ -2362,14 +2400,6 @@
     }
   }, { passive:true });
 
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && state.imageViewerOpen) {
-      closeImageViewer();
-      e.preventDefault();
-      e.stopPropagation();
-    }
-  }, true);
-
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden && state.opened) pumpQueue();
   });
@@ -2379,6 +2409,11 @@
   openCacheDb().catch(() => {});
 
   document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && state.imageViewerOpen) {
+      closeImageViewer();
+      e.preventDefault();
+      return;
+    }
     if ((e.altKey || e.metaKey) && e.key.toLowerCase() === 'm') {
       e.preventDefault();
       state.opened = !state.opened;
