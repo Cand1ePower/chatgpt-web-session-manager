@@ -141,25 +141,33 @@
       .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:12px; align-items:start; }
       .empty { grid-column:1/-1; padding:70px 20px; text-align:center; opacity:.52; }
 
-      /* The grid item never changes height. Only the inner surface expands, so other cards never move. */
+      /* The grid placeholder never changes size. The surface is promoted at its exact on-screen rect and then morphs outward. */
       .card { position:relative; height:170px; min-height:170px; overflow:visible; z-index:1; }
       .cardSurface {
         position:absolute; inset:0; height:170px; overflow:hidden;
         border-radius:17px; background:rgba(255,255,255,.76); border:1px solid rgba(0,0,0,.08);
-        box-shadow: 0 4px 18px rgba(0,0,0,.045);
-        transition: height .42s cubic-bezier(.22,.8,.24,1), transform .36s cubic-bezier(.22,.8,.24,1), box-shadow .28s ease, border-color .2s ease;
-        will-change:height, transform; z-index:1;
+        box-shadow:0 4px 18px rgba(0,0,0,.045);
+        transition:box-shadow .30s ease, border-color .24s ease, border-radius .42s cubic-bezier(.16,1,.3,1);
+        transform-origin:center center; z-index:1;
       }
       @media (prefers-color-scheme: dark) { .cardSurface { background:#202022; border-color:rgba(255,255,255,.09); box-shadow:none; } }
-      .card.expanded { z-index:50; }
+      .card.morphing, .card.expanded { z-index:50; }
+      .card.morphing .cardSurface, .card.expanded .cardSurface {
+        position:fixed; inset:auto; z-index:60;
+        will-change:left, top, width, height, border-radius, box-shadow;
+        transition:
+          left .52s cubic-bezier(.16,1,.3,1),
+          top .52s cubic-bezier(.16,1,.3,1),
+          width .52s cubic-bezier(.16,1,.3,1),
+          height .52s cubic-bezier(.16,1,.3,1),
+          border-radius .46s cubic-bezier(.16,1,.3,1),
+          box-shadow .30s ease,
+          border-color .24s ease;
+      }
       .card.expanded .cardSurface {
-        position:fixed; inset:auto;
-        left:var(--expand-left); top:var(--expand-top);
-        width:var(--expand-width); height:var(--expand-height);
-        transform:none;
+        border-radius:22px;
         box-shadow:0 30px 90px rgba(0,0,0,.34), 0 0 0 1px rgba(127,127,127,.14);
-        border-color:rgba(127,127,127,.30); z-index:60;
-        transition:left .36s cubic-bezier(.22,.8,.24,1), top .36s cubic-bezier(.22,.8,.24,1), width .38s cubic-bezier(.22,.8,.24,1), height .38s cubic-bezier(.22,.8,.24,1), box-shadow .28s ease, border-color .2s ease;
+        border-color:rgba(127,127,127,.30);
       }
       .card.selected .cardSurface { outline:2px solid currentColor; outline-offset:1px; }
       .card.deleted .cardSurface { opacity:.25; transform:scale(.97); pointer-events:none; }
@@ -184,18 +192,20 @@
       .mini { border:0; background:transparent; color:inherit; width:26px; height:26px; border-radius:8px; cursor:pointer; opacity:.55; }
       .mini:hover { background:rgba(127,127,127,.12); opacity:1; }
 
-      .preview { padding:0 14px 13px 42px; height:98px; overflow:hidden; transition:height .34s ease, opacity .2s ease; }
+      .preview { padding:0 14px 13px 42px; height:98px; overflow:hidden; transition:opacity .16s ease, transform .24s cubic-bezier(.16,1,.3,1); }
       .previewItem { display:grid; grid-template-columns:34px 1fr; gap:7px; align-items:start; margin-bottom:7px; }
       .previewLabel { font-size:10px; line-height:1.55; font-weight:750; opacity:.42; padding-top:1px; }
       .previewText { font-size:12.3px; line-height:1.48; opacity:.74; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; word-break:break-word; }
       .previewItem.recent .previewText { opacity:.58; -webkit-line-clamp:1; }
-      .card.expanded .preview, .card.expanded .loadingPreview { display:none; }
+      .card.expanded .preview, .card.expanded .loadingPreview, .card.expanded .waitingPreview {
+        opacity:0; transform:translateY(-5px) scale(.99); pointer-events:none;
+      }
 
-      .waitingPreview { padding:3px 14px 14px 42px; height:98px; display:flex; flex-direction:column; justify-content:center; gap:8px; }
+      .waitingPreview { padding:3px 14px 14px 42px; height:98px; display:flex; flex-direction:column; justify-content:center; gap:8px; transition:opacity .16s ease, transform .24s cubic-bezier(.16,1,.3,1); }
       .waitingLine { font-size:11px; opacity:.52; display:flex; align-items:center; gap:7px; }
       .waitingDot { width:7px; height:7px; border-radius:50%; background:currentColor; opacity:.28; }
       .waitingHint { font-size:10.5px; line-height:1.45; opacity:.38; }
-      .loadingPreview { padding:1px 14px 14px 42px; height:98px; }
+      .loadingPreview { padding:1px 14px 14px 42px; height:98px; transition:opacity .16s ease, transform .24s cubic-bezier(.16,1,.3,1); }
       .loadingStatus { display:flex; align-items:center; gap:7px; font-size:11px; opacity:.58; margin-bottom:10px; }
       .spinner { width:13px; height:13px; border:1.5px solid rgba(127,127,127,.28); border-top-color:currentColor; border-radius:50%; animation:spin .75s linear infinite; opacity:.72; }
       @keyframes spin { to { transform:rotate(360deg); } }
@@ -208,13 +218,15 @@
       .card.expanded .fade { opacity:0; }
 
       .expandedBody {
-        padding:0 10px 12px 42px; max-height:0; opacity:0; overflow:hidden; pointer-events:none;
-        transition:max-height .40s cubic-bezier(.22,.8,.24,1), opacity .20s ease .10s;
+        position:absolute; left:0; right:0; top:68px; bottom:0;
+        padding:0 14px 15px; opacity:0; overflow:hidden; pointer-events:none;
+        display:grid; grid-template-columns:minmax(280px,.9fr) minmax(0,2fr); gap:12px;
+        transform:translateY(10px) scale(.992);
+        transition:opacity .20s ease, transform .34s cubic-bezier(.16,1,.3,1);
       }
       .card.expanded .expandedBody {
-        max-height:none; height:calc(var(--expand-height) - 74px); opacity:1; pointer-events:auto;
-        padding:0 14px 15px 14px;
-        display:grid; grid-template-columns:minmax(280px,.9fr) minmax(0,2fr); gap:12px;
+        opacity:1; pointer-events:auto; transform:translateY(0) scale(1);
+        transition-delay:.14s;
       }
       .digest {
         margin:0; padding:13px 13px 12px; border-radius:14px;
@@ -1103,30 +1115,62 @@
     loadMoreBtn.disabled = state.loadingList || state.manualLoading || rateCooling || (state.total > 0 && state.offset >= state.total);
   }
 
+  function setSurfaceRect(surface, rect) {
+    surface.style.left = `${Math.round(rect.left)}px`;
+    surface.style.top = `${Math.round(rect.top)}px`;
+    surface.style.width = `${Math.round(rect.width)}px`;
+    surface.style.height = `${Math.round(rect.height)}px`;
+  }
+
+  function clearMorphStyles(card) {
+    if (!card) return;
+    const surface = card.querySelector('.cardSurface');
+    card.classList.remove('expanded', 'morphing');
+    if (surface) {
+      surface.style.removeProperty('left');
+      surface.style.removeProperty('top');
+      surface.style.removeProperty('width');
+      surface.style.removeProperty('height');
+    }
+  }
+
   function expandCard(card) {
     if (!card?.isConnected) return;
     clearTimeout(state.collapseTimer);
     const id = card.dataset.id;
+    if (state.expandedId === id && card.classList.contains('expanded')) return;
     if (state.expandedId && state.expandedId !== id) collapseExpanded(true);
 
-    const rect = card.getBoundingClientRect();
+    const surface = card.querySelector('.cardSurface');
+    if (!surface) return;
+
+    // FLIP-style morph: promote the surface to fixed positioning at the exact pixels
+    // where the hovered card currently sits, then animate those same edges outward.
+    const startRect = surface.getBoundingClientRect();
     const contentRect = content.getBoundingClientRect();
     const gap = 12;
-    const targetWidth = Math.min(contentRect.width - 28, rect.width * 3 + gap * 2);
-    const targetHeight = Math.min(contentRect.height - 24, rect.height * 3 + gap * 2);
+    const targetWidth = Math.min(contentRect.width - 28, startRect.width * 3 + gap * 2);
+    const targetHeight = Math.min(contentRect.height - 24, startRect.height * 3 + gap * 2);
 
-    let left = rect.left - (targetWidth - rect.width) / 2;
-    let top = rect.top - (targetHeight - rect.height) / 2;
+    let left = startRect.left - (targetWidth - startRect.width) / 2;
+    let top = startRect.top - (targetHeight - startRect.height) / 2;
     left = Math.max(contentRect.left + 10, Math.min(left, contentRect.right - targetWidth - 10));
     top = Math.max(contentRect.top + 10, Math.min(top, contentRect.bottom - targetHeight - 10));
 
-    card.style.setProperty('--expand-left', `${Math.round(left)}px`);
-    card.style.setProperty('--expand-top', `${Math.round(top)}px`);
-    card.style.setProperty('--expand-width', `${Math.round(targetWidth)}px`);
-    card.style.setProperty('--expand-height', `${Math.round(targetHeight)}px`);
-    card.classList.add('expanded');
+    card.classList.add('morphing');
+    setSurfaceRect(surface, startRect);
     panel.classList.add('hasExpanded');
     state.expandedId = id;
+
+    // Force the promoted card's first frame to be identical to the original card.
+    // The next animation frame changes only geometry, so it visibly grows from the hovered card.
+    void surface.offsetWidth;
+    requestAnimationFrame(() => {
+      if (!card.isConnected || state.expandedId !== id) return;
+      card.classList.add('expanded');
+      setSurfaceRect(surface, { left, top, width: targetWidth, height: targetHeight });
+    });
+
     if (!state.details.has(id)) setExpandedLoading(card, state.loadingIds.has(id));
     enqueueDetail(id, 'hover');
   }
@@ -1134,18 +1178,47 @@
   function collapseExpanded(immediate = false) {
     clearTimeout(state.hoverTimer);
     clearTimeout(state.collapseTimer);
-    const run = () => {
-      if (state.expandedId) {
-        const id = state.expandedId;
-        const card = grid.querySelector(`.card[data-id="${CSS.escape(id)}"]`);
-        card?.classList.remove('expanded');
-        cancelQueuedPriority(id);
-      }
-      state.expandedId = null;
+    const id = state.expandedId;
+    if (!id) {
+      panel.classList.remove('hasExpanded');
+      return;
+    }
+    const card = grid.querySelector(`.card[data-id="${CSS.escape(id)}"]`);
+    const surface = card?.querySelector('.cardSurface');
+
+    const finish = () => {
+      clearMorphStyles(card);
+      cancelQueuedPriority(id);
+      if (state.expandedId === id) state.expandedId = null;
       panel.classList.remove('hasExpanded');
     };
-    if (immediate) run();
-    else state.collapseTimer = setTimeout(run, HOVER_COLLAPSE_DELAY_MS);
+
+    if (immediate || !card || !surface) {
+      finish();
+      return;
+    }
+
+    state.collapseTimer = setTimeout(() => {
+      if (!card.isConnected || state.expandedId !== id) return;
+      const homeRect = card.getBoundingClientRect();
+      card.classList.remove('expanded');
+      // Keep .morphing so position:fixed remains active while the card shrinks back
+      // into its exact grid placeholder instead of snapping to it.
+      requestAnimationFrame(() => setSurfaceRect(surface, homeRect));
+
+      let done = false;
+      const cleanup = () => {
+        if (done) return;
+        done = true;
+        surface.removeEventListener('transitionend', onEnd);
+        finish();
+      };
+      const onEnd = (ev) => {
+        if (ev.target === surface && ['left','top','width','height'].includes(ev.propertyName)) cleanup();
+      };
+      surface.addEventListener('transitionend', onEnd);
+      setTimeout(cleanup, 620);
+    }, HOVER_COLLAPSE_DELAY_MS);
   }
 
   async function patchConversation(id, body) {
