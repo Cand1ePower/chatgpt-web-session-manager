@@ -75,6 +75,7 @@
     autoExpand: localStorage.getItem('chatdeck:autoExpand') !== '0',
     imageUrlCache: new Map(),
     imagePromises: new Map(),
+    imageViewerOpen: false,
   };
 
   const host = document.createElement('div');
@@ -511,6 +512,36 @@
       .card.expanded .compactMedia { display:none !important; }
       .compactMedia img { width:100%; height:100%; object-fit:cover; opacity:0; transition:opacity .18s ease; }
       .compactMedia.loaded img { opacity:1; }
+      .compactMedia[data-url] { cursor:zoom-in; }
+
+      .imageViewer {
+        position:fixed; inset:0; z-index:2147483647; display:none; place-items:center; padding:24px;
+        background:rgba(5,5,7,.68); backdrop-filter:blur(9px); -webkit-backdrop-filter:blur(9px);
+        opacity:0; transition:opacity .18s ease; cursor:zoom-out;
+      }
+      .imageViewer.show { display:grid; opacity:1; animation:imageViewerIn .2s cubic-bezier(.16,1,.3,1); }
+      @keyframes imageViewerIn { from { opacity:0; } to { opacity:1; } }
+      .imageViewerFrame {
+        width:min(60vw, 1280px); height:min(60vh, 860px); display:grid; place-items:center;
+        border-radius:18px; position:relative; cursor:zoom-out;
+      }
+      .imageViewerImage {
+        display:block; max-width:100%; max-height:100%; width:auto; height:auto; object-fit:contain;
+        border-radius:14px; cursor:default; user-select:none; -webkit-user-drag:none;
+        box-shadow:0 28px 90px rgba(0,0,0,.46), 0 0 0 1px rgba(255,255,255,.09);
+        opacity:0; transform:scale(.965); transition:opacity .18s ease, transform .24s cubic-bezier(.16,1,.3,1);
+      }
+      .imageViewerImage.loaded { opacity:1; transform:scale(1); }
+      .imageViewerLoader {
+        position:absolute; width:34px; height:34px; border-radius:50%; border:3px solid rgba(255,255,255,.18);
+        border-top-color:rgba(255,255,255,.88); animation:spin .8s linear infinite; pointer-events:none;
+      }
+      .imageViewer.loaded .imageViewerLoader { display:none; }
+      .imageViewerHint {
+        position:absolute; left:50%; bottom:18px; transform:translateX(-50%); padding:7px 11px; border-radius:999px;
+        background:rgba(20,20,23,.55); color:rgba(255,255,255,.78); font-size:11px; line-height:1;
+        backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px); pointer-events:none; white-space:nowrap;
+      }
 
       .loadCombo { min-width:214px; }
       .loadCountBtn { gap:0; padding-left:13px; }
@@ -609,6 +640,13 @@
         </div>
         <div class="toast"></div>
       </section>
+      <div class="imageViewer" role="dialog" aria-modal="true" aria-label="图片预览" aria-hidden="true">
+        <div class="imageViewerFrame">
+          <div class="imageViewerLoader" aria-hidden="true"></div>
+          <img class="imageViewerImage" alt="对话图片预览">
+        </div>
+        <div class="imageViewerHint">点击图片外任意位置关闭 · Esc</div>
+      </div>
     </div>
   `;
 
@@ -637,6 +675,42 @@
   const archiveBtn = $('[data-act="archive"]');
   const deleteBtn = $('[data-act="delete"]');
   const autoExpandBtn = $('[data-act="toggleAutoExpand"]');
+  const imageViewer = $('.imageViewer');
+  const imageViewerImage = $('.imageViewerImage');
+
+  function openImageViewer(url, alt = '对话图片预览') {
+    if (!imageViewer || !imageViewerImage || !url) return;
+    state.imageViewerOpen = true;
+    imageViewer.classList.remove('loaded');
+    imageViewer.classList.add('show');
+    imageViewer.setAttribute('aria-hidden', 'false');
+    imageViewerImage.classList.remove('loaded');
+    imageViewerImage.alt = alt || '对话图片预览';
+    imageViewerImage.removeAttribute('src');
+    requestAnimationFrame(() => {
+      imageViewerImage.src = url;
+    });
+  }
+
+  function closeImageViewer() {
+    if (!imageViewer || !imageViewerImage || !state.imageViewerOpen) return;
+    state.imageViewerOpen = false;
+    imageViewer.classList.remove('show', 'loaded');
+    imageViewer.setAttribute('aria-hidden', 'true');
+    imageViewerImage.classList.remove('loaded');
+    imageViewerImage.removeAttribute('src');
+  }
+
+  imageViewerImage?.addEventListener('load', () => {
+    if (!state.imageViewerOpen) return;
+    imageViewer?.classList.add('loaded');
+    imageViewerImage.classList.add('loaded');
+  });
+  imageViewerImage?.addEventListener('error', () => {
+    if (!state.imageViewerOpen) return;
+    imageViewer?.classList.add('loaded');
+    showToast('图片预览加载失败');
+  });
 
   function showToast(text) {
     toast.textContent = text;
@@ -1204,6 +1278,7 @@
       const image = compact?.querySelector('img');
       if (compact && image) {
         compact.classList.add('show');
+        compact.dataset.url = firstUrl;
         image.addEventListener('load', () => compact.classList.add('loaded'), { once:true });
         image.src = firstUrl;
       }
@@ -2166,7 +2241,7 @@
       if (!state.chats.length) loadNextBatch();
       return;
     }
-    if (act === 'close') { collapseExpanded(true); state.opened = false; overlay.classList.remove('open'); return; }
+    if (act === 'close') { closeImageViewer(); collapseExpanded(true); state.opened = false; overlay.classList.remove('open'); return; }
     if (act === 'toggleAutoExpand') { setAutoExpand(!state.autoExpand); return; }
     if (act === 'loadMore') { loadNextBatch(); return; }
     if (act === 'toggleCountMenu') { if (!countToggle.disabled) setCountMenu(!state.countMenuOpen); return; }
@@ -2186,8 +2261,16 @@
     }
     if (act === 'archive') { batchAction('archive', [...state.selected]); return; }
     if (act === 'delete') { batchAction('delete', [...state.selected]); return; }
-    const mediaTile = e.target.closest('.mediaTile[data-url]');
-    if (mediaTile?.dataset.url) { window.open(mediaTile.dataset.url, '_blank', 'noopener'); return; }
+    const mediaPreview = e.target.closest('.mediaTile[data-url], .compactMedia[data-url]');
+    if (mediaPreview?.dataset.url) {
+      const img = mediaPreview.querySelector('img');
+      openImageViewer(mediaPreview.dataset.url, img?.alt || '对话图片预览');
+      return;
+    }
+    if (e.target.closest('.imageViewer') && !e.target.closest('.imageViewerImage')) {
+      closeImageViewer();
+      return;
+    }
     if (act === 'toggleMsg') {
       const body = e.target.closest('.msg')?.querySelector('.msgBody');
       if (!body) return;
@@ -2214,7 +2297,7 @@
 
     // Manual mode: only a click on the non-interactive card surface expands it.
     // Buttons, checkbox controls and links retain their own behavior.
-    if (!state.autoExpand && !card.classList.contains('expanded') && !e.target.closest('button, input, label, a, .mediaTile')) {
+    if (!state.autoExpand && !card.classList.contains('expanded') && !e.target.closest('button, input, label, a, .mediaTile, .compactMedia, .imageViewer')) {
       expandCard(card);
       return;
     }
@@ -2237,6 +2320,7 @@
   });
 
   root.addEventListener('pointerout', (e) => {
+    if (state.imageViewerOpen) return;
     if (!state.autoExpand) return;
     const card = e.target.closest('.card');
     if (!card) return;
@@ -2277,6 +2361,14 @@
       scrollLoadTimer = setTimeout(() => loadNextBatch(), 260);
     }
   }, { passive:true });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && state.imageViewerOpen) {
+      closeImageViewer();
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }, true);
 
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden && state.opened) pumpQueue();
