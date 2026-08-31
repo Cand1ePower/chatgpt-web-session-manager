@@ -56,8 +56,6 @@
     hoverTimer: null,
     collapseTimer: null,
     morphAnimation: null,
-    morphProxy: null,
-    morphAuxAnimations: [],
     lastManualRequestAt: 0,
     manualLoading: false,
     manualPendingIds: new Set(),
@@ -446,20 +444,14 @@
       .mini.jump:hover { background:rgba(80,110,180,.12); }
       .mini.trash:hover { background:rgba(220,38,38,.12); color:#c92b2b; }
 
-      /* Real surface never scales during morphing. A disposable proxy performs the geometry animation,
-         so text is rendered at native size before and after the transition with no one-frame shrink flash. */
-      .card.morphing .cardSurface, .card.expanded .cardSurface { will-change:auto; transform:none !important; }
-      .card.collapsing .cardSurface { position:absolute !important; inset:0 !important; width:auto !important; height:170px !important; transform:none !important; will-change:auto; }
-      .card.morphing .cardSurface { opacity:0; }
-      .card.expanded:not(.morphing):not(.collapsing) .cardSurface { opacity:1; }
-      .morphProxy {
-        position:fixed !important; inset:auto !important; z-index:2147483647 !important; margin:0 !important;
-        pointer-events:none !important; overflow:hidden !important; transform-origin:0 0 !important;
-        backface-visibility:hidden; will-change:transform,opacity; contain:paint;
+      /* v1.1: return to the v0.9 real-surface FLIP. The same cardSurface is promoted to fixed
+         positioning and visually inverted onto its original pixels before it grows outward.
+         No detached proxy is used, so the animation always originates from the hovered card. */
+      .card.morphing .cardSurface, .card.expanded .cardSurface, .card.collapsing .cardSurface {
+        transform-origin:0 0; backface-visibility:hidden; -webkit-font-smoothing:antialiased;
+        will-change:transform; contain:paint;
       }
-      .morphProxy .expandedBody { pointer-events:none !important; }
-      .morphProxy.proxyExpanded .expandedBody { opacity:1 !important; transform:none !important; }
-      .morphProxy.proxyExpanded .preview, .morphProxy.proxyExpanded .loadingPreview, .morphProxy.proxyExpanded .waitingPreview { opacity:0 !important; }
+      .card.expanded:not(.animating):not(.collapsing) .cardSurface { will-change:auto; }
 
       .msg { white-space:normal; }
       .msgBody { line-height:1.58; }
@@ -1806,68 +1798,12 @@
     surface.style.height = `${rect.height}px`;
   }
 
-  function transformBetween(fromRect, toRect) {
-    const sx = Math.max(.0001, toRect.width / fromRect.width);
-    const sy = Math.max(.0001, toRect.height / fromRect.height);
-    const dx = toRect.left - fromRect.left;
-    const dy = toRect.top - fromRect.top;
+  function rectToTransform(fromRect, layoutRect) {
+    const sx = Math.max(.0001, fromRect.width / layoutRect.width);
+    const sy = Math.max(.0001, fromRect.height / layoutRect.height);
+    const dx = fromRect.left - layoutRect.left;
+    const dy = fromRect.top - layoutRect.top;
     return `translate3d(${dx}px, ${dy}px, 0) scale(${sx}, ${sy})`;
-  }
-
-  function clearAuxAnimations() {
-    for (const anim of state.morphAuxAnimations || []) { try { anim.cancel(); } catch (_) {} }
-    state.morphAuxAnimations = [];
-  }
-
-  function removeMorphProxy() {
-    if (state.morphProxy?.isConnected) state.morphProxy.remove();
-    state.morphProxy = null;
-  }
-
-  function cancelMorphAnimation(removeProxy = true) {
-    const anim = state.morphAnimation;
-    state.morphAnimation = null;
-    if (anim) { try { anim.cancel(); } catch (_) {} }
-    clearAuxAnimations();
-    if (removeProxy) removeMorphProxy();
-  }
-
-  function createMorphProxy(surface, rect, expanded = false) {
-    const proxy = surface.cloneNode(true);
-    proxy.classList.add('morphProxy');
-    if (expanded) proxy.classList.add('proxyExpanded');
-    proxy.removeAttribute('style');
-    const cs = getComputedStyle(surface);
-    proxy.style.background = cs.background;
-    proxy.style.border = cs.border;
-    proxy.style.borderRadius = cs.borderRadius;
-    proxy.style.boxShadow = cs.boxShadow;
-    proxy.style.color = cs.color;
-    proxy.style.opacity = '1';
-    setSurfaceRect(proxy, rect);
-    root.appendChild(proxy);
-    state.morphProxy = proxy;
-    return proxy;
-  }
-
-  function clearSurfaceGeometry(surface) {
-    if (!surface) return;
-    surface.style.removeProperty('left');
-    surface.style.removeProperty('top');
-    surface.style.removeProperty('width');
-    surface.style.removeProperty('height');
-    surface.style.removeProperty('transform');
-    surface.style.removeProperty('transform-origin');
-    surface.style.removeProperty('transition');
-    surface.style.removeProperty('opacity');
-  }
-
-  function clearMorphStyles(card) {
-    if (!card) return;
-    cancelMorphAnimation(true);
-    const surface = card.querySelector('.cardSurface');
-    card.classList.remove('expanded', 'morphing', 'animating', 'collapsing');
-    clearSurfaceGeometry(surface);
   }
 
   function targetRectForCard(startRect) {
@@ -1882,60 +1818,109 @@
     return { left, top, width:targetWidth, height:targetHeight };
   }
 
+  function cancelMorphAnimation() {
+    const anim = state.morphAnimation;
+    state.morphAnimation = null;
+    if (!anim) return;
+    try { anim.cancel(); } catch (_) {}
+  }
+
+  // Freeze the exact visible pixels before reversing an opening animation midway.
+  // Because getBoundingClientRect() includes the current transform, this avoids jumps on fast mouse-leave.
+  function freezeSurfaceAtCurrentPixels(surface) {
+    const visualRect = surface.getBoundingClientRect();
+    cancelMorphAnimation();
+    surface.style.transition = 'none';
+    surface.style.transform = 'none';
+    setSurfaceRect(surface, visualRect);
+    void surface.offsetWidth;
+    surface.style.removeProperty('transition');
+    return visualRect;
+  }
+
+  function clearMorphStyles(card) {
+    if (!card) return;
+    const surface = card.querySelector('.cardSurface');
+    cancelMorphAnimation();
+    card.classList.remove('expanded', 'morphing', 'animating', 'collapsing');
+    if (surface) {
+      surface.style.removeProperty('left');
+      surface.style.removeProperty('top');
+      surface.style.removeProperty('width');
+      surface.style.removeProperty('height');
+      surface.style.removeProperty('transform');
+      surface.style.removeProperty('transform-origin');
+      surface.style.removeProperty('transition');
+      surface.style.removeProperty('opacity');
+    }
+  }
+
+  function settleOpenAnimation(surface, anim) {
+    // Keep the final scale(1) visually stable while releasing WAAPI's fill layer.
+    // Writing the final transform before cancel prevents the old one-frame compressed-text flash.
+    surface.style.transform = 'translate3d(0,0,0) scale(1,1)';
+    void surface.offsetWidth;
+    try { anim.cancel(); } catch (_) {}
+    surface.style.transform = 'none';
+  }
+
   function expandCard(card) {
     if (!card?.isConnected) return;
     clearTimeout(state.collapseTimer);
     const id = card.dataset.id;
     if (state.expandedId === id && card.classList.contains('expanded') && !card.classList.contains('collapsing')) return;
     if (state.expandedId && state.expandedId !== id) collapseExpanded(true);
+
     const surface = card.querySelector('.cardSurface');
     if (!surface) return;
 
+    // v0.9 behavior restored: measure the untouched hovered card first, then promote THAT SAME
+    // DOM surface to its final fixed rect and invert it back over the original pixels.
     const startRect = surface.getBoundingClientRect();
     const targetRect = targetRectForCard(startRect);
-    cancelMorphAnimation(true);
-    // Snapshot the compact card before applying expanded layout. Only the proxy scales;
-    // the real text is never scaled, which removes the end-of-animation tiny-text frame.
-    const proxy = createMorphProxy(surface, startRect);
 
+    cancelMorphAnimation();
     card.classList.remove('collapsing');
-    card.classList.add('expanded', 'morphing', 'animating');
+    card.classList.add('morphing', 'expanded', 'animating');
     panel.classList.add('hasExpanded');
     state.expandedId = id;
+
+    // No geometry transition is allowed here. The first painted frame is target geometry + inverse
+    // transform, which is pixel-identical to startRect and therefore cannot fly in from top-left.
     surface.style.transition = 'none';
     surface.style.transformOrigin = '0 0';
     setSurfaceRect(surface, targetRect);
-    surface.style.opacity = '0';
+    const inverted = rectToTransform(startRect, targetRect);
+    surface.style.transform = inverted;
     void surface.offsetWidth;
     surface.style.removeProperty('transition');
 
     const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (reduced || typeof proxy.animate !== 'function') {
-      removeMorphProxy();
-      surface.style.removeProperty('opacity');
+    if (reduced || typeof surface.animate !== 'function') {
+      surface.style.transform = 'none';
       card.classList.remove('morphing', 'animating');
     } else {
-      const move = proxy.animate([
-        { transform:'translate3d(0,0,0) scale(1,1)', opacity:1 },
-        { transform:transformBetween(startRect, targetRect), opacity:1, offset:.70 },
-        { transform:transformBetween(startRect, targetRect), opacity:0, offset:1 },
-      ], { duration:300, easing:'cubic-bezier(.16,1,.3,1)', fill:'both' });
-      const reveal = surface.animate([
-        { opacity:0, offset:0 }, { opacity:0, offset:.58 }, { opacity:1, offset:1 }
-      ], { duration:300, easing:'ease-out', fill:'both' });
-      state.morphAnimation = move;
-      state.morphAuxAnimations = [reveal];
-      Promise.allSettled([move.finished, reveal.finished]).then(() => {
-        if (state.morphAnimation !== move) return;
+      const anim = surface.animate(
+        [
+          { transform: inverted },
+          { transform: 'translate3d(0,0,0) scale(1,1)' }
+        ],
+        {
+          duration: 340,
+          easing: 'cubic-bezier(.16,1,.3,1)',
+          fill: 'both'
+        }
+      );
+      state.morphAnimation = anim;
+      anim.finished.then(() => {
+        if (state.morphAnimation !== anim) return;
         state.morphAnimation = null;
-        clearAuxAnimations();
-        removeMorphProxy();
-        surface.style.removeProperty('opacity');
+        settleOpenAnimation(surface, anim);
         if (card.isConnected && state.expandedId === id && !card.classList.contains('collapsing')) {
           card.classList.remove('morphing', 'animating');
           if (state.details.has(id)) hydrateMediaForCard(id).catch(() => {});
         }
-      });
+      }).catch(() => {});
     }
 
     if (!state.details.has(id)) setExpandedLoading(card, state.loadingIds.has(id));
@@ -1950,68 +1935,81 @@
     clearTimeout(state.hoverTimer);
     clearTimeout(state.collapseTimer);
     const id = state.expandedId;
-    if (!id) { panel.classList.remove('hasExpanded'); return; }
+    if (!id) {
+      panel.classList.remove('hasExpanded');
+      return;
+    }
     const card = grid.querySelector(`.card[data-id="${CSS.escape(id)}"]`);
     const surface = card?.querySelector('.cardSurface');
 
     const finish = () => {
-      if (card) {
-        card.classList.remove('expanded', 'morphing', 'animating', 'collapsing');
-        clearSurfaceGeometry(surface);
-      }
-      cancelMorphAnimation(true);
+      clearMorphStyles(card);
       cancelQueuedPriority(id);
       if (state.expandedId === id) state.expandedId = null;
       panel.classList.remove('hasExpanded');
     };
 
-    if (immediate || !card || !surface) { finish(); return; }
+    if (immediate || !card || !surface) {
+      finish();
+      return;
+    }
 
     state.collapseTimer = setTimeout(() => {
       if (!card.isConnected || state.expandedId !== id) return;
-      const homeRect = card.getBoundingClientRect();
-      const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-      // If opening is still in flight, reuse its proxy at the exact current visual rect.
-      let proxy = state.morphProxy;
-      let currentRect;
-      if (proxy?.isConnected) {
-        currentRect = proxy.getBoundingClientRect();
-        cancelMorphAnimation(false);
-        proxy.style.transform = 'none';
-        proxy.style.opacity = '1';
-        setSurfaceRect(proxy, currentRect);
-      } else {
-        currentRect = surface.getBoundingClientRect();
-        cancelMorphAnimation(true);
-        proxy = createMorphProxy(surface, currentRect, true);
+      // The grid card remains a 170px placeholder, so this is always its real home rectangle.
+      const homeRect = card.getBoundingClientRect();
+      // If opening is still running, freeze exactly where it currently is and reverse from there.
+      const currentRect = freezeSurfaceAtCurrentPixels(surface);
+      card.classList.remove('animating');
+      card.classList.add('collapsing');
+
+      const endTransform = rectToTransform(homeRect, currentRect);
+      const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+      if (reduced || typeof surface.animate !== 'function') {
+        finish();
+        return;
       }
 
-      // Restore the actual card to its compact native layout immediately, but keep it transparent
-      // until the proxy reaches home. This prevents scaled text from flashing at the end.
-      card.classList.remove('expanded', 'morphing', 'animating');
-      card.classList.add('collapsing');
-      clearSurfaceGeometry(surface);
-      surface.style.opacity = '0';
-      void surface.offsetWidth;
+      const anim = surface.animate(
+        [
+          { transform: 'translate3d(0,0,0) scale(1,1)' },
+          { transform: endTransform }
+        ],
+        {
+          duration: 250,
+          easing: 'cubic-bezier(.22,.61,.36,1)',
+          fill: 'both'
+        }
+      );
+      state.morphAnimation = anim;
+      anim.finished.then(() => {
+        if (state.morphAnimation !== anim) return;
+        state.morphAnimation = null;
 
-      if (reduced || typeof proxy.animate !== 'function') { finish(); return; }
-      const toHome = transformBetween(currentRect, homeRect);
-      const move = proxy.animate([
-        { transform:'translate3d(0,0,0) scale(1,1)', opacity:1 },
-        { transform:toHome, opacity:.94, offset:.62 },
-        { transform:toHome, opacity:0, offset:1 },
-      ], { duration:230, easing:'cubic-bezier(.22,.61,.36,1)', fill:'both' });
-      const revealHome = surface.animate([
-        { opacity:0, offset:0 }, { opacity:0, offset:.62 }, { opacity:1, offset:1 }
-      ], { duration:230, easing:'ease-out', fill:'both' });
-      state.morphAnimation = move;
-      state.morphAuxAnimations = [revealHome];
-      Promise.allSettled([move.finished, revealHome.finished]).then(() => {
-        if (state.morphAnimation !== move) return;
-        finish();
-      });
-      setTimeout(() => { if (state.expandedId === id && card.classList.contains('collapsing')) finish(); }, 360);
+        // Freeze the end-state transform before canceling WAAPI. The fixed surface is now exactly
+        // over its grid placeholder; restoring normal card geometry in the same JS turn removes
+        // the scale without exposing an intermediate tiny-text frame.
+        try { anim.commitStyles?.(); } catch (_) {}
+        try { anim.cancel(); } catch (_) {}
+        surface.style.transition = 'none';
+        card.classList.remove('expanded', 'morphing', 'animating', 'collapsing');
+        surface.style.removeProperty('left');
+        surface.style.removeProperty('top');
+        surface.style.removeProperty('width');
+        surface.style.removeProperty('height');
+        surface.style.removeProperty('transform');
+        surface.style.removeProperty('transform-origin');
+        void surface.offsetWidth;
+        surface.style.removeProperty('transition');
+        cancelQueuedPriority(id);
+        if (state.expandedId === id) state.expandedId = null;
+        panel.classList.remove('hasExpanded');
+      }).catch(() => {});
+
+      setTimeout(() => {
+        if (state.expandedId === id && card.classList.contains('collapsing')) finish();
+      }, 380);
     }, HOVER_COLLAPSE_DELAY_MS);
   }
 
