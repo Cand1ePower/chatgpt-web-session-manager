@@ -150,7 +150,7 @@
         position:absolute; inset:0; height:170px; overflow:hidden;
         border-radius:17px; background:rgba(255,255,255,.76); border:1px solid rgba(0,0,0,.08);
         box-shadow:0 4px 18px rgba(0,0,0,.045);
-        transition:box-shadow .30s ease, border-color .24s ease, border-radius .42s cubic-bezier(.16,1,.3,1);
+        transition:box-shadow .22s ease, border-color .18s ease, border-radius .28s cubic-bezier(.16,1,.3,1);
         transform-origin:center center; z-index:1;
       }
       @media (prefers-color-scheme: dark) { .cardSurface { background:#202022; border-color:rgba(255,255,255,.09); box-shadow:none; } }
@@ -163,7 +163,7 @@
         will-change:transform;
         /* Geometry is never transitioned with left/top/width/height.
            A compositor-only FLIP transform keeps the first pixel exactly on the hovered card. */
-        transition:box-shadow .24s ease, border-color .20s ease, border-radius .24s ease;
+        transition:box-shadow .18s ease, border-color .16s ease, border-radius .18s ease;
       }
       .card.expanded .cardSurface, .card.collapsing .cardSurface {
         border-radius:22px;
@@ -181,28 +181,53 @@
       .card.selected .cardSurface { outline:2px solid currentColor; outline-offset:1px; }
       .card.deleted .cardSurface { opacity:.25; transform:scale(.97); pointer-events:none; }
 
-      /* Unloaded conversations are intentionally more recognizable at a glance. */
-      .card.unloaded .cardSurface {
-        border-color:rgba(108,108,112,.24);
-        background-image:linear-gradient(135deg, rgba(127,127,127,.026) 0, rgba(127,127,127,.026) 1px, transparent 1px, transparent 13px);
-        background-size:14px 14px;
+      /* Loaded conversations get a deliberate finished rim. Unloaded cards stay quiet and use placeholder lines. */
+      .card.loaded .cardSurface {
+        border-color:rgba(67,67,73,.30);
+        box-shadow:0 5px 20px rgba(0,0,0,.055), inset 0 0 0 1px rgba(255,255,255,.42);
       }
-      .card.unloaded .cardSurface::before {
-        content:""; position:absolute; inset:0; pointer-events:none; border-radius:inherit;
-        box-shadow:inset 3px 0 0 rgba(92,92,98,.20); opacity:.9;
+      .card.loaded .cardSurface::after {
+        content:""; position:absolute; inset:-1px; border-radius:inherit; padding:1.5px; pointer-events:none;
+        background:linear-gradient(118deg, rgba(35,35,39,.56) 0%, rgba(110,110,118,.18) 27%, rgba(110,110,118,.06) 53%, rgba(35,35,39,.34) 100%);
+        -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+        -webkit-mask-composite:xor; mask-composite:exclude;
+        opacity:.70; transition:opacity .18s ease, filter .18s ease;
+      }
+      .card.loaded:not(.expanded):not(.morphing):not(.collapsing) .cardSurface:hover {
+        border-color:rgba(48,48,54,.40);
+        box-shadow:0 10px 28px rgba(0,0,0,.08), inset 0 0 0 1px rgba(255,255,255,.52);
+      }
+      .card.loaded:not(.expanded):not(.morphing):not(.collapsing) .cardSurface:hover::after { opacity:.94; filter:contrast(1.08); }
+      .card.unloaded .cardSurface {
+        border-color:rgba(108,108,112,.13);
+        box-shadow:0 3px 14px rgba(0,0,0,.028);
       }
       .card.unloaded:not(.expanded):not(.morphing):not(.collapsing) .cardSurface:hover {
-        border-color:rgba(92,92,98,.35); box-shadow:0 9px 28px rgba(0,0,0,.07);
+        border-color:rgba(92,92,98,.22); box-shadow:0 7px 22px rgba(0,0,0,.05);
       }
-      .card.contentLoading .cardSurface::before {
-        box-shadow:inset 3px 0 0 rgba(92,92,98,.42);
-        animation:edgePulse 1.1s ease-in-out infinite alternate;
+      .card.contentLoading .cardSurface {
+        border-color:rgba(92,92,98,.34);
+        animation:loadingEdgePulse 1.05s ease-in-out infinite alternate;
       }
-      @keyframes edgePulse { from { opacity:.38 } to { opacity:1 } }
+      @keyframes loadingEdgePulse {
+        from { box-shadow:0 3px 14px rgba(0,0,0,.025) }
+        to { box-shadow:0 8px 26px rgba(0,0,0,.075), inset 0 0 0 1px rgba(127,127,127,.12) }
+      }
       @media (prefers-color-scheme: dark) {
-        .card.unloaded .cardSurface { border-color:rgba(255,255,255,.17); background-image:linear-gradient(135deg, rgba(255,255,255,.022) 0, rgba(255,255,255,.022) 1px, transparent 1px, transparent 13px); }
-        .card.unloaded .cardSurface::before { box-shadow:inset 3px 0 0 rgba(255,255,255,.16); }
-        .card.contentLoading .cardSurface::before { box-shadow:inset 3px 0 0 rgba(255,255,255,.36); }
+        .card.loaded .cardSurface {
+          border-color:rgba(255,255,255,.24);
+          box-shadow:0 5px 22px rgba(0,0,0,.16), inset 0 0 0 1px rgba(255,255,255,.075);
+        }
+        .card.loaded .cardSurface::after {
+          background:linear-gradient(118deg, rgba(255,255,255,.64) 0%, rgba(255,255,255,.18) 29%, rgba(255,255,255,.055) 55%, rgba(255,255,255,.34) 100%);
+          opacity:.76;
+        }
+        .card.loaded:not(.expanded):not(.morphing):not(.collapsing) .cardSurface:hover {
+          border-color:rgba(255,255,255,.32);
+          box-shadow:0 10px 32px rgba(0,0,0,.24), inset 0 0 0 1px rgba(255,255,255,.10);
+        }
+        .card.unloaded .cardSurface { border-color:rgba(255,255,255,.075); box-shadow:none; }
+        .card.unloaded:not(.expanded):not(.morphing):not(.collapsing) .cardSurface:hover { border-color:rgba(255,255,255,.13); box-shadow:0 8px 24px rgba(0,0,0,.14); }
       }
 
       .focusVeil {
@@ -211,7 +236,7 @@
         background:rgba(20,20,22,.025);
         backdrop-filter: blur(1.6px) saturate(.96);
         -webkit-backdrop-filter: blur(1.6px) saturate(.96);
-        transition:opacity .22s ease;
+        transition:opacity .16s ease;
       }
       .panel.hasExpanded .focusVeil { opacity:1; pointer-events:auto; }
       @media (prefers-color-scheme: dark) { .focusVeil { background:rgba(0,0,0,.055); } }
@@ -228,15 +253,15 @@
         background:rgba(127,127,127,.105); box-shadow:inset 0 0 0 1px rgba(127,127,127,.12);
       }
       .contentState i { width:6px; height:6px; border-radius:50%; background:currentColor; opacity:.38; }
-      .contentState.pending { background:rgba(127,127,127,.12); box-shadow:inset 0 0 0 1px rgba(127,127,127,.20); }
+      .contentState.pending, .contentState.ready { display:none; }
       .contentState.loading { background:rgba(127,127,127,.17); box-shadow:inset 0 0 0 1px rgba(127,127,127,.24); }
       .contentState.loading i { opacity:.85; animation:statePulse .78s ease-in-out infinite alternate; }
-      .contentState.ready { opacity:.48; background:transparent; box-shadow:none; padding-left:2px; padding-right:2px; }
+      .metaSep.hidden, .count.hidden { display:none; }
       @keyframes statePulse { from { transform:scale(.72); opacity:.38 } to { transform:scale(1.2); opacity:1 } }
       .mini { border:0; background:transparent; color:inherit; width:26px; height:26px; border-radius:8px; cursor:pointer; opacity:.55; }
       .mini:hover { background:rgba(127,127,127,.12); opacity:1; }
 
-      .preview { padding:0 14px 13px 42px; height:98px; overflow:hidden; transition:opacity .16s ease, transform .24s cubic-bezier(.16,1,.3,1); }
+      .preview { padding:0 14px 13px 42px; height:98px; overflow:hidden; transition:opacity .13s ease, transform .18s cubic-bezier(.16,1,.3,1); }
       .previewItem { display:grid; grid-template-columns:34px 1fr; gap:7px; align-items:start; margin-bottom:7px; }
       .previewLabel { font-size:10px; line-height:1.55; font-weight:750; opacity:.42; padding-top:1px; }
       .previewText { font-size:12.3px; line-height:1.48; opacity:.74; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; word-break:break-word; }
@@ -245,13 +270,28 @@
         opacity:0; transform:translateY(-5px) scale(.99); pointer-events:none;
       }
 
-      .waitingPreview { padding:3px 14px 14px 42px; height:98px; display:flex; flex-direction:column; justify-content:center; gap:8px; transition:opacity .16s ease, transform .24s cubic-bezier(.16,1,.3,1); }
-      .waitingLine { font-size:11px; opacity:.72; display:flex; align-items:center; gap:8px; font-weight:620; }
+      .waitingPreview {
+        padding:18px 14px 14px 42px; height:98px; display:flex; flex-direction:column;
+        justify-content:flex-start; gap:10px; transition:opacity .13s ease, transform .18s cubic-bezier(.16,1,.3,1);
+      }
+      .placeholderLine {
+        height:8px; flex:0 0 8px; border-radius:999px;
+        background:linear-gradient(90deg, rgba(127,127,127,.075) 0%, rgba(127,127,127,.18) 46%, rgba(127,127,127,.095) 100%);
+        box-shadow:inset 0 1px 0 rgba(255,255,255,.08); opacity:.72;
+        transition:opacity .18s ease, transform .18s ease;
+      }
+      .placeholderLine.p1 { width:86%; }
+      .placeholderLine.p2 { width:68%; }
+      .placeholderLine.p3 { width:45%; }
+      .card.unloaded:not(.contentLoading):hover .placeholderLine { opacity:.90; transform:translateX(1px); }
       .waitingDot { width:8px; height:8px; border-radius:50%; background:transparent; border:1.5px solid currentColor; opacity:.42; box-shadow:0 0 0 3px rgba(127,127,127,.07); }
-      .waitingHint { font-size:10.5px; line-height:1.45; opacity:.46; max-width:96%; }
-      .waitingAction { display:inline-flex; align-items:center; gap:5px; width:max-content; margin-top:1px; font-size:9.8px; opacity:.46; }
-      .waitingAction::before { content:"↗"; font-size:10px; }
-      .loadingPreview { padding:1px 14px 14px 42px; height:98px; transition:opacity .16s ease, transform .24s cubic-bezier(.16,1,.3,1); }
+      @media (prefers-color-scheme: dark) {
+        .placeholderLine {
+          background:linear-gradient(90deg, rgba(255,255,255,.055) 0%, rgba(255,255,255,.14) 46%, rgba(255,255,255,.072) 100%);
+          box-shadow:none;
+        }
+      }
+      .loadingPreview { padding:1px 14px 14px 42px; height:98px; transition:opacity .13s ease, transform .18s cubic-bezier(.16,1,.3,1); }
       .loadingStatus { display:flex; align-items:center; gap:7px; font-size:11px; opacity:.58; margin-bottom:10px; }
       .spinner { width:13px; height:13px; border:1.5px solid rgba(127,127,127,.28); border-top-color:currentColor; border-radius:50%; animation:spin .75s linear infinite; opacity:.72; }
       @keyframes spin { to { transform:rotate(360deg); } }
@@ -268,11 +308,11 @@
         padding:0 14px 15px; opacity:0; overflow:hidden; pointer-events:none;
         display:grid; grid-template-columns:minmax(280px,.9fr) minmax(0,2fr); gap:12px;
         transform:translateY(10px) scale(.992);
-        transition:opacity .20s ease, transform .34s cubic-bezier(.16,1,.3,1);
+        transition:opacity .16s ease, transform .24s cubic-bezier(.16,1,.3,1);
       }
       .card.expanded .expandedBody {
         opacity:1; pointer-events:auto; transform:translateY(0) scale(1);
-        transition-delay:.14s;
+        transition-delay:.08s;
       }
       .digest {
         margin:0; padding:13px 13px 12px; border-radius:14px;
@@ -816,13 +856,19 @@
     card.classList.toggle('unloaded', !msgs);
     card.classList.toggle('loaded', !!msgs);
     card.classList.toggle('contentLoading', !msgs && isLoading);
+    const sep = card.querySelector('.metaSep');
     if (msgs) {
-      if (count) count.textContent = `${msgs.length} 条消息`;
-      if (chip) { chip.className = 'contentState ready'; chip.innerHTML = '<i></i><span>已加载</span>'; }
+      if (count) { count.textContent = `${msgs.length} 条消息`; count.classList.remove('hidden'); }
+      sep?.classList.remove('hidden');
+      if (chip) { chip.className = 'contentState ready'; chip.innerHTML = ''; }
       return;
     }
-    if (count) count.textContent = isLoading ? '正文读取中' : '等待读取';
-    if (chip) { chip.className = `contentState ${isLoading ? 'loading' : 'pending'}`; chip.innerHTML = `<i></i><span>${isLoading ? '读取中' : '未加载'}</span>`; }
+    if (count) { count.textContent = ''; count.classList.add('hidden'); }
+    sep?.classList.add('hidden');
+    if (chip) {
+      chip.className = `contentState ${isLoading ? 'loading' : 'pending'}`;
+      chip.innerHTML = isLoading ? '<i></i><span>读取中</span>' : '';
+    }
     const current = surface?.querySelector('.preview, .loadingPreview, .waitingPreview');
     if (current && isLoading && !current.classList.contains('loadingPreview')) {
       const tmp = document.createElement('div'); tmp.innerHTML = loadingPreviewHTML(); current.replaceWith(tmp.firstElementChild);
@@ -1081,11 +1127,10 @@
   }
 
   function waitingPreviewHTML(id) {
-    const err = state.detailErrors.get(id);
-    return `<div class="waitingPreview">
-      <div class="waitingLine"><span class="waitingDot"></span><span>${escapeAttr(err || '正文尚未加载')}</span></div>
-      <div class="waitingHint">悬停 0.5 秒可按需读取；批量“加载 N 个”会自动从未加载卡片继续。</div>
-      <div class="waitingAction">未加载卡片</div>
+    return `<div class="waitingPreview" aria-label="正文尚未读取">
+      <span class="placeholderLine p1"></span>
+      <span class="placeholderLine p2"></span>
+      <span class="placeholderLine p3"></span>
     </div>`;
   }
 
@@ -1143,14 +1188,16 @@
       const msgs = state.details.get(c.id);
       const createdAt = getCreatedAt(c);
       const loadState = cardLoadStatus(c.id);
-      const count = msgs ? `${msgs.length} 条消息` : (loadState.cls === 'loading' ? '正文读取中' : '等待读取');
+      const count = msgs ? `${msgs.length} 条消息` : '';
+      const metaHidden = msgs ? '' : 'hidden';
+      const chipHtml = loadState.cls === 'loading' ? '<i></i><span>读取中</span>' : '';
       return `<article class="card ${selected ? 'selected' : ''} ${msgs ? 'loaded' : 'unloaded'} ${loadState.cls === 'loading' ? 'contentLoading' : ''}" data-id="${escapeAttr(c.id)}">
         <div class="cardSurface">
           <div class="cardHead">
             <input class="check" type="checkbox" ${selected ? 'checked' : ''} aria-label="选择对话" />
             <div class="titleWrap">
               <div class="title" title="双击打开原对话">${escapeAttr(c.title || '无标题对话')}</div>
-              <div class="meta"><span class="createdAt" title="${escapeAttr(formatDateMs(createdAt, true))}">创建 ${escapeAttr(formatDateMs(createdAt))}</span><span>·</span><span class="count">${count}</span><span class="contentState ${loadState.cls}"><i></i><span>${loadState.label}</span></span></div>
+              <div class="meta"><span class="createdAt" title="${escapeAttr(formatDateMs(createdAt, true))}">创建 ${escapeAttr(formatDateMs(createdAt))}</span><span class="metaSep ${metaHidden}">·</span><span class="count ${metaHidden}">${count}</span><span class="contentState ${loadState.cls}">${chipHtml}</span></div>
             </div>
             <button class="mini" data-act="singleDelete" title="删除">×</button>
           </div>
@@ -1369,7 +1416,7 @@
           { transform: 'translate3d(0,0,0) scale(1,1)' }
         ],
         {
-          duration: 500,
+          duration: 380,
           easing: 'cubic-bezier(.16,1,.3,1)',
           fill: 'both'
         }
@@ -1436,7 +1483,7 @@
           { transform: endTransform }
         ],
         {
-          duration: 360,
+          duration: 280,
           easing: 'cubic-bezier(.22,.61,.36,1)',
           fill: 'both'
         }
@@ -1454,7 +1501,7 @@
       // Safety cleanup if transition events/WAAPI completion are interrupted by the page.
       setTimeout(() => {
         if (state.expandedId === id && card.classList.contains('collapsing')) finish();
-      }, 520);
+      }, 420);
     }, HOVER_COLLAPSE_DELAY_MS);
   }
 
