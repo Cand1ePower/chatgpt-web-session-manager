@@ -187,7 +187,7 @@
         position:absolute; inset:0; height:170px; overflow:hidden;
         border-radius:17px; background:rgba(255,255,255,.76); border:1px solid rgba(0,0,0,.08);
         box-shadow:0 4px 18px rgba(0,0,0,.045);
-        transition:box-shadow .22s ease, border-color .18s ease, border-radius .28s cubic-bezier(.16,1,.3,1);
+        transition:box-shadow .22s ease, border-color .18s ease, border-radius .28s cubic-bezier(.16,1,.3,1), transform .20s cubic-bezier(.2,.8,.2,1);
         transform-origin:center center; z-index:1;
       }
       @media (prefers-color-scheme: dark) { .cardSurface { background:#202022; border-color:rgba(255,255,255,.09); box-shadow:none; } }
@@ -228,6 +228,12 @@
         transform:translateZ(0);
       }
       .card.selected .selectedRim { opacity:1; }
+      /* Selection feedback: keep the grid footprint unchanged while the visible card
+         settles inward by 2%. Expanded/morphing cards stay at full scale so FLIP
+         geometry and reading size are unaffected. */
+      .card.selected:not(.expanded):not(.morphing):not(.collapsing) .cardSurface {
+        transform:scale(.98);
+      }
       .selectedRim::before {
         content:""; position:absolute; left:50%; top:50%; width:185%; aspect-ratio:1 / 1;
         background:conic-gradient(
