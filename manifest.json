@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "ChatGPT Card Manager",
+  "version": "0.1.0",
+  "description": "Batch-load, preview, archive and delete ChatGPT conversations in animated cards.",
+  "content_scripts": [
+    {
+      "matches": ["https://chatgpt.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "host_permissions": ["https://chatgpt.com/*"],
+  "permissions": []
+}
