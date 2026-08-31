@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ChatGPT Card Manager",
-  "version": "1.5.0",
-  "description": "Card-based ChatGPT conversation manager with switchable hover/click expansion, local cache, Markdown/media preview with viewport-safe in-page image lightbox, load-speed controls and rate-limit protection.",
+  "version": "1.6.0",
+  "description": "Card-based ChatGPT conversation manager with smooth FLIP expansion, local cache, Markdown/media preview, viewport-safe image lightbox, and a low-saturation clockwise rainbow selection rim.",
   "content_scripts": [
     {
       "matches": [

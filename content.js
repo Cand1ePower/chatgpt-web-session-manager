@@ -215,34 +215,63 @@
         opacity:0 !important; transform:translateY(6px) scale(.995) !important;
         pointer-events:none !important; transition:opacity .11s ease, transform .14s ease !important;
       }
-      /* Selected cards use a monochrome flowing rim rather than a static native-looking outline. */
+      /* Selected cards use a low-saturation rainbow rim that rotates clockwise around the card. */
+      @property --selected-rim-angle {
+        syntax: "<angle>";
+        inherits: false;
+        initial-value: 0deg;
+      }
       .card.selected .cardSurface {
         outline:none;
-        border-color:rgba(92,92,98,.42);
-        box-shadow:0 8px 28px rgba(0,0,0,.09), inset 0 0 0 1px rgba(255,255,255,.34);
+        border-color:rgba(96,96,104,.34);
+        box-shadow:0 8px 28px rgba(0,0,0,.09), inset 0 0 0 1px rgba(255,255,255,.30);
       }
       .card.selected .cardSurface::before {
         content:""; position:absolute; inset:-1px; border-radius:inherit; padding:2px; pointer-events:none; z-index:8;
-        background:linear-gradient(115deg, #171719 0%, #66666b 16%, #f4f4f5 34%, #8d8d92 50%, #2e2e31 67%, #e6e6e8 84%, #171719 100%);
-        background-size:320% 320%;
+        background:conic-gradient(from var(--selected-rim-angle),
+          hsl(350 34% 64%) 0deg,
+          hsl(20 34% 66%) 38deg,
+          hsl(48 31% 67%) 78deg,
+          hsl(86 27% 64%) 116deg,
+          hsl(145 27% 62%) 158deg,
+          hsl(186 30% 64%) 200deg,
+          hsl(220 31% 67%) 240deg,
+          hsl(260 29% 69%) 278deg,
+          hsl(306 29% 67%) 320deg,
+          hsl(350 34% 64%) 360deg);
         -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
         -webkit-mask-composite:xor; mask-composite:exclude;
-        animation:selectedRimFlow 2.35s linear infinite;
-        opacity:.96; filter:contrast(1.06);
+        animation:selectedRimSpin 3.6s linear infinite;
+        opacity:.92;
+        filter:saturate(.82) contrast(1.025);
+        will-change:background;
       }
-      @keyframes selectedRimFlow {
-        0% { background-position:0% 50%; }
-        100% { background-position:220% 50%; }
+      @keyframes selectedRimSpin {
+        to { --selected-rim-angle:360deg; }
       }
       @media (prefers-color-scheme: dark) {
         .card.selected .cardSurface {
-          border-color:rgba(255,255,255,.34);
-          box-shadow:0 9px 30px rgba(0,0,0,.26), inset 0 0 0 1px rgba(255,255,255,.09);
+          border-color:rgba(255,255,255,.28);
+          box-shadow:0 9px 30px rgba(0,0,0,.26), inset 0 0 0 1px rgba(255,255,255,.08);
         }
         .card.selected .cardSurface::before {
-          background:linear-gradient(115deg, #050506 0%, #737378 18%, #ffffff 36%, #8b8b90 52%, #171719 69%, #ededee 86%, #050506 100%);
-          background-size:320% 320%; opacity:1;
+          background:conic-gradient(from var(--selected-rim-angle),
+            hsl(350 35% 69%) 0deg,
+            hsl(20 34% 70%) 38deg,
+            hsl(48 31% 72%) 78deg,
+            hsl(86 28% 68%) 116deg,
+            hsl(145 28% 67%) 158deg,
+            hsl(186 31% 69%) 200deg,
+            hsl(220 32% 72%) 240deg,
+            hsl(260 30% 73%) 278deg,
+            hsl(306 30% 71%) 320deg,
+            hsl(350 35% 69%) 360deg);
+          opacity:.96;
+          filter:saturate(.80) contrast(1.02) brightness(1.02);
         }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .card.selected .cardSurface::before { animation-duration:12s; }
       }
       .card.deleted .cardSurface { opacity:.25; transform:scale(.97); pointer-events:none; }
 
