@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ChatGPT Card Manager",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "description": "Card-based ChatGPT conversation manager with smooth FLIP expansion, local cache, Markdown/media preview, and a continuously rotating rainbow selection rim with subtle glow.",
   "content_scripts": [
     {

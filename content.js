@@ -215,82 +215,81 @@
         opacity:0 !important; transform:translateY(6px) scale(.995) !important;
         pointer-events:none !important; transition:opacity .11s ease, transform .14s ease !important;
       }
-      /* Selected cards: continuous clockwise rainbow rim. Only the hue angle moves;
-         opacity, glow and shadow stay constant so there is no breathing/fading cycle. */
-      @property --selected-rim-angle {
-        syntax: "<angle>";
-        inherits: false;
-        initial-value: 0deg;
-      }
-      .card.selected .cardSurface {
-        outline:none;
-        border-color:rgba(112,118,132,.42);
-        /* Constant, very subtle halo. Never animated. */
-        box-shadow:
-          0 8px 28px rgba(0,0,0,.09),
-          0 0 0 1px rgba(255,255,255,.28) inset,
-          0 0 7px rgba(150,170,205,.12),
-          0 0 14px rgba(196,150,184,.055);
-      }
-      .card.selected .cardSurface::before {
-        content:""; position:absolute; inset:-1px; border-radius:inherit; padding:2px; pointer-events:none; z-index:8;
-        background:conic-gradient(from var(--selected-rim-angle),
-          hsl(350 47% 64%) 0deg,
-          hsl(18 48% 65%) 38deg,
-          hsl(47 45% 66%) 78deg,
-          hsl(86 40% 63%) 116deg,
-          hsl(145 41% 61%) 158deg,
-          hsl(185 44% 63%) 200deg,
-          hsl(220 45% 66%) 240deg,
-          hsl(260 43% 68%) 278deg,
-          hsl(306 44% 66%) 320deg,
-          hsl(350 47% 64%) 360deg);
+      /* Selected cards: continuous clockwise rainbow rim.
+         v1.8 rotates a compositor layer underneath a fixed border mask instead of
+         animating a gradient angle. This keeps luminance constant and reads as
+         directional flow rather than full-border colour flashing. */
+      .selectedRim {
+        position:absolute; inset:-1px; border-radius:inherit; padding:2px; pointer-events:none; z-index:24;
+        opacity:0; overflow:hidden;
         -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
         -webkit-mask-composite:xor; mask-composite:exclude;
-        animation:selectedRimSpin 3.35s linear infinite;
-        animation-play-state:running;
-        animation-fill-mode:both;
-        opacity:1;
-        transition:none;
-        filter:saturate(1.02) contrast(1.035) brightness(1.015)
-               drop-shadow(0 0 2.2px rgba(174,184,218,.17));
-        will-change:background;
+        filter:drop-shadow(0 0 2.4px rgba(155,181,224,.18)) drop-shadow(0 0 4.5px rgba(214,159,201,.075));
+        transform:translateZ(0);
       }
-      @keyframes selectedRimSpin {
-        0%   { --selected-rim-angle:0deg; opacity:1; }
-        25%  { --selected-rim-angle:90deg; opacity:1; }
-        50%  { --selected-rim-angle:180deg; opacity:1; }
-        75%  { --selected-rim-angle:270deg; opacity:1; }
-        100% { --selected-rim-angle:360deg; opacity:1; }
+      .card.selected .selectedRim { opacity:1; }
+      .selectedRim::before {
+        content:""; position:absolute; left:50%; top:50%; width:185%; aspect-ratio:1 / 1;
+        background:conic-gradient(
+          hsl(350 58% 68%) 0deg,
+          hsl(20 59% 68%) 42deg,
+          hsl(50 56% 69%) 84deg,
+          hsl(92 52% 66%) 126deg,
+          hsl(150 54% 65%) 168deg,
+          hsl(190 57% 66%) 210deg,
+          hsl(224 59% 69%) 252deg,
+          hsl(267 57% 70%) 294deg,
+          hsl(312 58% 68%) 336deg,
+          hsl(350 58% 68%) 360deg
+        );
+        transform:translate3d(-50%,-50%,0) rotate(0deg);
+        transform-origin:50% 50%;
+        animation:selectedRimOrbit 4.1s linear infinite;
+        will-change:transform; backface-visibility:hidden;
+      }
+      @keyframes selectedRimOrbit {
+        from { transform:translate3d(-50%,-50%,0) rotate(0deg); }
+        to   { transform:translate3d(-50%,-50%,0) rotate(360deg); }
+      }
+      .card.selected .cardSurface {
+        outline:none; border-color:rgba(118,126,145,.46);
+        box-shadow:
+          0 8px 28px rgba(0,0,0,.09),
+          0 0 0 1px rgba(255,255,255,.25) inset,
+          0 0 7px rgba(150,178,220,.11),
+          0 0 13px rgba(205,156,193,.05);
       }
       @media (prefers-color-scheme: dark) {
+        .selectedRim {
+          filter:drop-shadow(0 0 2.6px rgba(166,192,238,.20)) drop-shadow(0 0 5px rgba(222,168,207,.085));
+        }
+        .selectedRim::before {
+          background:conic-gradient(
+            hsl(350 60% 72%) 0deg,
+            hsl(20 60% 72%) 42deg,
+            hsl(50 57% 73%) 84deg,
+            hsl(92 53% 69%) 126deg,
+            hsl(150 55% 69%) 168deg,
+            hsl(190 58% 70%) 210deg,
+            hsl(224 60% 73%) 252deg,
+            hsl(267 58% 74%) 294deg,
+            hsl(312 59% 72%) 336deg,
+            hsl(350 60% 72%) 360deg
+          );
+        }
         .card.selected .cardSurface {
           border-color:rgba(255,255,255,.30);
           box-shadow:
             0 9px 30px rgba(0,0,0,.26),
-            0 0 0 1px rgba(255,255,255,.075) inset,
-            0 0 8px rgba(151,174,218,.14),
-            0 0 16px rgba(206,153,191,.065);
-        }
-        .card.selected .cardSurface::before {
-          background:conic-gradient(from var(--selected-rim-angle),
-            hsl(350 48% 69%) 0deg,
-            hsl(18 48% 70%) 38deg,
-            hsl(47 45% 71%) 78deg,
-            hsl(86 41% 67%) 116deg,
-            hsl(145 42% 66%) 158deg,
-            hsl(185 45% 68%) 200deg,
-            hsl(220 46% 71%) 240deg,
-            hsl(260 44% 72%) 278deg,
-            hsl(306 45% 70%) 320deg,
-            hsl(350 48% 69%) 360deg);
-          opacity:1;
-          filter:saturate(1.02) contrast(1.035) brightness(1.02)
-                 drop-shadow(0 0 2.4px rgba(184,196,232,.19));
+            0 0 0 1px rgba(255,255,255,.07) inset,
+            0 0 8px rgba(157,185,229,.13),
+            0 0 15px rgba(214,162,200,.06);
         }
       }
-      /* Do not let loading/hover state add a breathing animation to selected cards. */
+      /* Selected state is steady: loading and loaded-edge effects must not pulse or
+         paint over the moving rim. */
       .card.selected.contentLoading .cardSurface { animation:none !important; }
+      .card.selected .cardSurface::after { opacity:0 !important; filter:none !important; }
       .card.deleted .cardSurface { opacity:.25; transform:scale(.97); pointer-events:none; }
 
       /* Loaded conversations get a deliberate finished rim. Unloaded cards stay quiet and use placeholder lines. */
@@ -1886,6 +1885,7 @@
       const chipHtml = loadState.cls === 'loading' ? '<i></i><span>读取中</span>' : '';
       return `<article class="card ${selected ? 'selected' : ''} ${msgs ? 'loaded' : 'unloaded'} ${loadState.cls === 'loading' ? 'contentLoading' : ''}" data-id="${escapeAttr(c.id)}">
         <div class="cardSurface">
+          <span class="selectedRim" aria-hidden="true"></span>
           <div class="cardHead">
             <label class="checkWrap" title="选择对话"><input class="check" type="checkbox" ${selected ? 'checked' : ''} aria-label="选择对话" /><span class="checkBox"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 8.2 6.5 11.3 12.9 4.8" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></label>
             <div class="titleWrap">
