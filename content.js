@@ -5,6 +5,9 @@
   const BATCH_SIZE = 24;
   const PREFETCH_CONCURRENCY = 4;
   const DELETE_DELAY_MS = 180;
+  const HOVER_EXPAND_DELAY_MS = 500;
+  const HOVER_COLLAPSE_DELAY_MS = 110;
+  const EXPANDED_HEIGHT = 500;
 
   const state = {
     token: null,
@@ -15,11 +18,15 @@
     query: '',
     selected: new Set(),
     details: new Map(),
+    createdTimes: new Map(),
     detailPromises: new Map(),
     queue: [],
     activeLoads: 0,
     opened: false,
     working: false,
+    expandedId: null,
+    hoverTimer: null,
+    collapseTimer: null,
   };
 
   const host = document.createElement('div');
@@ -60,6 +67,7 @@
       @media (prefers-color-scheme: dark) {
         .panel { background: color-mix(in srgb, #171719 95%, transparent); color:#f3f3f4; border-color:rgba(255,255,255,.10); }
       }
+      .topbar, .footer { position:relative; z-index:70; background:inherit; }
       .topbar { min-height:76px; padding: 14px 16px; display:flex; align-items:center; gap:12px; border-bottom:1px solid rgba(127,127,127,.18); }
       .brand { min-width:190px; padding-left:2px; }
       .brand b { display:block; font-size:17px; letter-spacing:-.02em; }
@@ -75,50 +83,101 @@
       .btn:disabled { opacity:.42; cursor:not-allowed; transform:none; }
       .close { width:40px; padding:0; font-size:19px; }
 
-      .content { min-height:0; overflow:auto; padding: 16px; overscroll-behavior:contain; }
+      .content { min-height:0; overflow:auto; padding: 16px; overscroll-behavior:contain; position:relative; }
       .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:12px; align-items:start; }
       .empty { grid-column:1/-1; padding:70px 20px; text-align:center; opacity:.52; }
 
-      .card {
-        position:relative; min-height:170px; max-height:170px; overflow:hidden;
-        border-radius:17px; background:rgba(255,255,255,.72); border:1px solid rgba(0,0,0,.08);
+      /* The grid item never changes height. Only the inner surface expands, so other cards never move. */
+      .card { position:relative; height:170px; min-height:170px; overflow:visible; z-index:1; }
+      .cardSurface {
+        position:absolute; inset:0; height:170px; overflow:hidden;
+        border-radius:17px; background:rgba(255,255,255,.76); border:1px solid rgba(0,0,0,.08);
         box-shadow: 0 4px 18px rgba(0,0,0,.045);
-        transition: max-height .42s cubic-bezier(.22,.8,.24,1), transform .28s cubic-bezier(.22,.8,.24,1), box-shadow .28s ease, border-color .2s ease;
-        will-change:max-height, transform;
+        transition: height .42s cubic-bezier(.22,.8,.24,1), transform .36s cubic-bezier(.22,.8,.24,1), box-shadow .28s ease, border-color .2s ease;
+        will-change:height, transform; z-index:1;
       }
-      @media (prefers-color-scheme: dark) { .card { background:rgba(255,255,255,.045); border-color:rgba(255,255,255,.09); box-shadow:none; } }
-      .card:hover, .card.pinned { max-height:430px; transform:translateY(-3px); box-shadow:0 18px 42px rgba(0,0,0,.14); border-color:rgba(127,127,127,.24); z-index:2; }
-      .card.selected { outline:2px solid currentColor; outline-offset:1px; }
-      .card.deleted { opacity:.25; transform:scale(.97); pointer-events:none; }
+      @media (prefers-color-scheme: dark) { .cardSurface { background:#202022; border-color:rgba(255,255,255,.09); box-shadow:none; } }
+      .card.expanded { z-index:50; }
+      .card.expanded .cardSurface {
+        height:${EXPANDED_HEIGHT}px; transform:translateY(-3px);
+        box-shadow:0 24px 68px rgba(0,0,0,.28), 0 0 0 1px rgba(127,127,127,.12);
+        border-color:rgba(127,127,127,.28); z-index:50;
+      }
+      .card.expanded.expandUp .cardSurface { transform:translateY(-327px); }
+      .card.selected .cardSurface { outline:2px solid currentColor; outline-offset:1px; }
+      .card.deleted .cardSurface { opacity:.25; transform:scale(.97); pointer-events:none; }
+
+      .focusVeil {
+        position:absolute; left:0; right:0; top:76px; bottom:64px; z-index:20;
+        opacity:0; pointer-events:none;
+        background:rgba(20,20,22,.025);
+        backdrop-filter: blur(1.6px) saturate(.96);
+        -webkit-backdrop-filter: blur(1.6px) saturate(.96);
+        transition:opacity .22s ease;
+      }
+      .panel.hasExpanded .focusVeil { opacity:1; }
+      @media (prefers-color-scheme: dark) { .focusVeil { background:rgba(0,0,0,.055); } }
+
       .cardHead { padding:14px 14px 10px; display:grid; grid-template-columns:auto 1fr auto; gap:10px; align-items:start; }
       .check { width:18px; height:18px; margin:2px 0 0; accent-color:#111; cursor:pointer; }
       .titleWrap { min-width:0; }
       .title { font-size:14px; line-height:1.35; font-weight:680; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:pointer; }
-      .meta { display:flex; gap:7px; margin-top:6px; font-size:11px; opacity:.53; }
+      .meta { display:flex; gap:7px; margin-top:6px; font-size:11px; opacity:.56; white-space:nowrap; overflow:hidden; }
+      .meta .createdAt { overflow:hidden; text-overflow:ellipsis; }
       .mini { border:0; background:transparent; color:inherit; width:26px; height:26px; border-radius:8px; cursor:pointer; opacity:.55; }
       .mini:hover { background:rgba(127,127,127,.12); opacity:1; }
 
-      .preview { padding:0 14px 14px 42px; font-size:12.5px; line-height:1.55; opacity:.72; height:92px; overflow:hidden; }
-      .preview.loading { opacity:.42; }
+      .preview { padding:0 14px 13px 42px; height:98px; overflow:hidden; transition:height .34s ease, opacity .2s ease; }
+      .previewItem { display:grid; grid-template-columns:34px 1fr; gap:7px; align-items:start; margin-bottom:7px; }
+      .previewLabel { font-size:10px; line-height:1.55; font-weight:750; opacity:.42; padding-top:1px; }
+      .previewText { font-size:12.3px; line-height:1.48; opacity:.74; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; word-break:break-word; }
+      .previewItem.recent .previewText { opacity:.58; -webkit-line-clamp:1; }
+      .card.expanded .preview { height:80px; }
+
+      .loadingPreview { padding:1px 14px 14px 42px; height:98px; }
+      .loadingStatus { display:flex; align-items:center; gap:7px; font-size:11px; opacity:.58; margin-bottom:10px; }
+      .spinner { width:13px; height:13px; border:1.5px solid rgba(127,127,127,.28); border-top-color:currentColor; border-radius:50%; animation:spin .75s linear infinite; opacity:.72; }
+      @keyframes spin { to { transform:rotate(360deg); } }
+      .skeleton { height:8px; margin:8px 0; border-radius:99px; background:linear-gradient(90deg, rgba(127,127,127,.09), rgba(127,127,127,.20), rgba(127,127,127,.09)); background-size:220% 100%; animation:shimmer 1.2s ease-in-out infinite; }
+      .skeleton.s1 { width:91%; } .skeleton.s2 { width:73%; } .skeleton.s3 { width:48%; }
+      @keyframes shimmer { 0% { background-position:100% 0 } 100% { background-position:-120% 0 } }
+
       .fade { position:absolute; left:0; right:0; bottom:0; height:44px; pointer-events:none; background:linear-gradient(transparent, rgba(255,255,255,.98)); transition:opacity .18s ease; }
       @media (prefers-color-scheme: dark) { .fade { background:linear-gradient(transparent, #202022); } }
-      .card:hover .fade, .card.pinned .fade { opacity:0; }
+      .card.expanded .fade { opacity:0; }
 
-      .messages {
-        margin:0 10px 10px 42px; padding:0 4px 6px 0; height:0; opacity:0; overflow:auto; overscroll-behavior:contain;
-        scrollbar-width:thin; transition:height .38s cubic-bezier(.22,.8,.24,1), opacity .22s ease .08s;
+      .expandedBody {
+        padding:0 10px 12px 42px; max-height:0; opacity:0; overflow:hidden; pointer-events:none;
+        transition:max-height .40s cubic-bezier(.22,.8,.24,1), opacity .20s ease .10s;
       }
-      .card:hover .messages, .card.pinned .messages { height:276px; opacity:1; }
-      .msg { margin:0 0 9px; padding:9px 10px; border-radius:11px; font-size:12.2px; line-height:1.5; white-space:pre-wrap; word-break:break-word; background:rgba(127,127,127,.09); }
-      .msg.user { background:rgba(127,127,127,.16); }
-      .role { display:block; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; opacity:.45; margin-bottom:4px; }
-      .moreHint { padding:10px; text-align:center; font-size:11px; opacity:.42; }
+      .card.expanded .expandedBody { max-height:340px; opacity:1; pointer-events:auto; }
+      .digest {
+        margin:0 4px 9px 0; padding:9px 10px 8px; border-radius:12px;
+        background:rgba(127,127,127,.075); border:1px solid rgba(127,127,127,.08);
+      }
+      .digestHead { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px; }
+      .digestHead b { font-size:11px; letter-spacing:.01em; }
+      .digestHead span { font-size:10px; opacity:.44; white-space:nowrap; }
+      .digestRow { display:grid; grid-template-columns:38px 1fr; gap:7px; margin-top:5px; align-items:start; }
+      .digestRow b { font-size:10px; opacity:.45; line-height:1.45; }
+      .digestRow span { font-size:11.4px; line-height:1.42; opacity:.78; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; word-break:break-word; }
+
+      .messages { margin:0 4px 0 0; padding:0 4px 4px 0; height:194px; overflow:auto; overscroll-behavior:contain; scrollbar-width:thin; }
+      .msg { margin:0 0 8px; padding:8px 9px; border-radius:11px; font-size:11.8px; line-height:1.48; white-space:pre-wrap; word-break:break-word; background:rgba(127,127,127,.075); }
+      .msg.user { background:rgba(127,127,127,.145); }
+      .role { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:9.5px; font-weight:750; letter-spacing:.04em; opacity:.43; margin-bottom:4px; }
+      .msgBody { position:relative; max-height:92px; overflow:hidden; }
+      .msgBody.long:not(.open)::after { content:""; position:absolute; left:0; right:0; bottom:0; height:28px; background:linear-gradient(transparent, rgba(127,127,127,.11)); pointer-events:none; }
+      .msgBody.open { max-height:none; }
+      .msgToggle { border:0; padding:3px 0 0; background:transparent; color:inherit; cursor:pointer; font-size:10px; opacity:.55; }
+      .msgToggle:hover { opacity:.9; }
+      .moreHint { padding:8px; text-align:center; font-size:10.5px; opacity:.42; }
 
       .footer { min-height:64px; padding:11px 16px; border-top:1px solid rgba(127,127,127,.18); display:flex; align-items:center; gap:10px; }
       .stats { margin-right:auto; font-size:12px; opacity:.62; }
       .progress { font-size:12px; min-width:150px; text-align:right; opacity:.66; }
       .toolbarSep { width:1px; height:26px; background:rgba(127,127,127,.18); }
-      .toast { position:absolute; left:50%; bottom:78px; transform:translateX(-50%) translateY(12px); padding:10px 13px; border-radius:12px; background:#171719; color:#fff; font-size:12px; opacity:0; pointer-events:none; transition:.22s ease; box-shadow:0 10px 34px rgba(0,0,0,.25); }
+      .toast { position:absolute; z-index:90; left:50%; bottom:78px; transform:translateX(-50%) translateY(12px); padding:10px 13px; border-radius:12px; background:#171719; color:#fff; font-size:12px; opacity:0; pointer-events:none; transition:.22s ease; box-shadow:0 10px 34px rgba(0,0,0,.25); }
       .toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
       @media (prefers-color-scheme: dark) { .toast { background:#f2f2f3; color:#151517; } }
     </style>
@@ -126,12 +185,13 @@
     <div class="overlay">
       <section class="panel">
         <header class="topbar">
-          <div class="brand"><b>Chat Deck</b><span>分批读取 · 卡片预览 · 批量管理</span></div>
+          <div class="brand"><b>Chat Deck</b><span>分批读取 · 速览预览 · 批量管理</span></div>
           <input class="search" placeholder="搜索已加载的标题或正文…" />
           <button class="btn" data-act="selectVisible">选择当前</button>
           <button class="btn close" data-act="close" title="关闭">×</button>
         </header>
         <main class="content"><div class="grid"></div></main>
+        <div class="focusVeil"></div>
         <footer class="footer">
           <div class="stats">尚未加载</div>
           <button class="btn" data-act="loadMore">加载下一批</button>
@@ -146,6 +206,7 @@
   `;
 
   const $ = (s) => root.querySelector(s);
+  const panel = $('.panel');
   const overlay = $('.overlay');
   const grid = $('.grid');
   const content = $('.content');
@@ -188,8 +249,49 @@
     return res;
   }
 
+  function normalizeTimestamp(value) {
+    if (value == null || value === '') return 0;
+    if (value instanceof Date) return Number.isNaN(+value) ? 0 : +value;
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value) || value <= 0) return 0;
+      if (value < 1e11) return Math.round(value * 1000); // seconds
+      if (value < 1e14) return Math.round(value);       // milliseconds
+      return 0;
+    }
+    if (typeof value === 'string') {
+      const s = value.trim();
+      if (!s) return 0;
+      if (/^\d+(\.\d+)?$/.test(s)) return normalizeTimestamp(Number(s));
+      const parsed = Date.parse(s);
+      return Number.isNaN(parsed) ? 0 : parsed;
+    }
+    return 0;
+  }
+
+  function getListCreatedAt(chat) {
+    return normalizeTimestamp(
+      chat?.create_time ?? chat?.createTime ?? chat?.created_at ?? chat?.createdAt ?? chat?.creation_time
+    );
+  }
+
+  function getCreatedAt(chat) {
+    return state.createdTimes.get(chat?.id) || getListCreatedAt(chat) || 0;
+  }
+
+  function formatDateMs(ms, detailed = false) {
+    if (!ms) return detailed ? '创建时间暂未返回' : '创建时间读取中…';
+    const d = new Date(ms);
+    if (Number.isNaN(+d)) return detailed ? '创建时间暂未返回' : '创建时间读取中…';
+    const now = new Date();
+    const sameYear = d.getFullYear() === now.getFullYear();
+    const options = detailed
+      ? { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit' }
+      : { ...(sameYear ? {} : { year:'2-digit' }), month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' };
+    return new Intl.DateTimeFormat('zh-CN', options).format(d);
+  }
+
   async function loadNextBatch() {
-    if (state.loadingList || state.offset >= state.total && state.total !== 0) return;
+    if (state.loadingList || (state.offset >= state.total && state.total !== 0)) return;
     state.loadingList = true;
     loadMoreBtn.disabled = true;
     loadMoreBtn.textContent = '读取中…';
@@ -200,7 +302,13 @@
       const data = await res.json();
       const items = Array.isArray(data?.items) ? data.items : [];
       const known = new Set(state.chats.map(x => x.id));
-      for (const item of items) if (item?.id && !known.has(item.id)) state.chats.push(item);
+      for (const item of items) {
+        if (!item?.id || known.has(item.id)) continue;
+        state.chats.push(item);
+        const listTime = getListCreatedAt(item);
+        if (listTime) state.createdTimes.set(item.id, listTime);
+        known.add(item.id);
+      }
       state.total = Number.isFinite(data?.total) ? data.total : Math.max(state.total, state.chats.length);
       state.offset += items.length;
       render();
@@ -224,9 +332,23 @@
     return '';
   }
 
+  function cleanText(text, max = Infinity) {
+    let s = String(text || '')
+      .replace(/```[\s\S]*?```/g, ' [代码/配置片段] ')
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, ' [图片] ')
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+      .replace(/^#{1,6}\s+/gm, '')
+      .replace(/^\s*[-*+]\s+/gm, '· ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (s.length > max) s = `${s.slice(0, max).trim()}…`;
+    return s;
+  }
+
   function parseConversation(data) {
     const mapping = data?.mapping || {};
     const messages = [];
+    let seq = 0;
     for (const node of Object.values(mapping)) {
       const m = node?.message;
       const role = m?.author?.role;
@@ -234,14 +356,31 @@
       const parts = Array.isArray(m?.content?.parts) ? m.content.parts : [];
       const text = parts.map(textFromPart).filter(Boolean).join('\n').trim();
       if (!text) continue;
-      messages.push({ role, text, time: m.create_time || 0 });
+      messages.push({ role, text, time: normalizeTimestamp(m.create_time ?? m.createTime), seq: seq++ });
     }
-    messages.sort((a,b) => (a.time||0) - (b.time||0));
-    return messages;
+    messages.sort((a,b) => {
+      if (a.time && b.time) return a.time - b.time;
+      if (a.time) return -1;
+      if (b.time) return 1;
+      return a.seq - b.seq;
+    });
+    const explicitCreated = normalizeTimestamp(
+      data?.create_time ?? data?.createTime ?? data?.created_at ?? data?.createdAt ?? data?.creation_time
+    );
+    const earliestMessage = messages.reduce((min, m) => m.time && (!min || m.time < min) ? m.time : min, 0);
+    return { messages, createdAt: explicitCreated || earliestMessage || 0 };
+  }
+
+  function markCardLoading(chatId) {
+    const card = grid.querySelector(`.card[data-id="${CSS.escape(chatId)}"]`);
+    if (!card || state.details.has(chatId)) return;
+    const count = card.querySelector('.count');
+    if (count) count.textContent = '读取中…';
   }
 
   function enqueueDetail(chatId, priority = false) {
     if (state.details.has(chatId) || state.detailPromises.has(chatId)) return;
+    markCardLoading(chatId);
     if (state.queue.includes(chatId)) {
       if (priority) state.queue = [chatId, ...state.queue.filter(x => x !== chatId)];
       return;
@@ -259,7 +398,9 @@
           const res = await api(`/backend-api/conversation/${encodeURIComponent(id)}`);
           if (!res.ok) throw new Error(`正文读取失败 (${res.status})`);
           const data = await res.json();
-          state.details.set(id, parseConversation(data));
+          const parsed = parseConversation(data);
+          state.details.set(id, parsed.messages);
+          if (parsed.createdAt) state.createdTimes.set(id, parsed.createdAt);
         } catch (e) {
           state.details.set(id, [{ role:'assistant', text:`[无法读取：${e.message}]`, time:0 }]);
         } finally {
@@ -271,13 +412,6 @@
       })();
       state.detailPromises.set(id, p);
     }
-  }
-
-  function formatDate(t) {
-    if (!t) return '未知时间';
-    const d = new Date(t * 1000);
-    if (Number.isNaN(+d)) return '未知时间';
-    return new Intl.DateTimeFormat('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }).format(d);
   }
 
   function filteredChats() {
@@ -292,7 +426,39 @@
 
   function escapeAttr(s='') { return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
+  function buildDigest(msgs) {
+    const user = msgs.filter(m => m.role === 'user');
+    const assistant = msgs.filter(m => m.role === 'assistant');
+    const first = user[0]?.text || msgs[0]?.text || '';
+    const lastUser = user[user.length - 1]?.text || first;
+    const lastAnswer = assistant[assistant.length - 1]?.text || '';
+    const chars = msgs.reduce((n, m) => n + m.text.length, 0);
+    return {
+      first: cleanText(first, 220),
+      recent: cleanText(lastUser, 220),
+      answer: cleanText(lastAnswer, 260),
+      stats: `${user.length} 次提问 · ${assistant.length} 次回复 · ${chars.toLocaleString('zh-CN')} 字`,
+    };
+  }
+
+  function loadingPreviewHTML() {
+    return `<div class="loadingPreview">
+      <div class="loadingStatus"><span class="spinner"></span><span>正在读取对话正文与创建时间…</span></div>
+      <div class="skeleton s1"></div><div class="skeleton s2"></div><div class="skeleton s3"></div>
+    </div>`;
+  }
+
+  function previewHTML(msgs) {
+    const d = buildDigest(msgs);
+    const same = d.first === d.recent;
+    return `<div class="preview">
+      <div class="previewItem"><span class="previewLabel">开始</span><span class="previewText">${escapeAttr(d.first || '没有可显示的文本')}</span></div>
+      ${same ? '' : `<div class="previewItem recent"><span class="previewLabel">最近</span><span class="previewText">${escapeAttr(d.recent)}</span></div>`}
+    </div>`;
+  }
+
   function render() {
+    collapseExpanded(true);
     const list = filteredChats();
     if (!list.length) {
       grid.innerHTML = `<div class="empty">${state.chats.length ? '没有匹配的已加载对话' : '点击“加载下一批”开始读取历史对话'}</div>`;
@@ -302,20 +468,22 @@
     grid.innerHTML = list.map(c => {
       const selected = state.selected.has(c.id);
       const msgs = state.details.get(c.id);
-      const first = msgs?.[0]?.text || '进入视口或将鼠标悬停在卡片上后加载内容预览…';
-      const count = msgs ? `${msgs.length} 条消息` : '正文未加载';
+      const createdAt = getCreatedAt(c);
+      const count = msgs ? `${msgs.length} 条消息` : '读取中…';
       return `<article class="card ${selected ? 'selected' : ''}" data-id="${escapeAttr(c.id)}">
-        <div class="cardHead">
-          <input class="check" type="checkbox" ${selected ? 'checked' : ''} aria-label="选择对话" />
-          <div class="titleWrap">
-            <div class="title" title="双击打开原对话">${escapeAttr(c.title || '无标题对话')}</div>
-            <div class="meta"><span>${formatDate(c.update_time || c.create_time)}</span><span>·</span><span class="count">${count}</span></div>
+        <div class="cardSurface">
+          <div class="cardHead">
+            <input class="check" type="checkbox" ${selected ? 'checked' : ''} aria-label="选择对话" />
+            <div class="titleWrap">
+              <div class="title" title="双击打开原对话">${escapeAttr(c.title || '无标题对话')}</div>
+              <div class="meta"><span class="createdAt" title="${escapeAttr(formatDateMs(createdAt, true))}">创建 ${escapeAttr(formatDateMs(createdAt))}</span><span>·</span><span class="count">${count}</span></div>
+            </div>
+            <button class="mini" data-act="singleDelete" title="删除">×</button>
           </div>
-          <button class="mini" data-act="singleDelete" title="删除">×</button>
+          ${msgs ? previewHTML(msgs) : loadingPreviewHTML()}
+          <div class="expandedBody"><div class="digest"></div><div class="messages"></div></div>
+          <div class="fade"></div>
         </div>
-        <div class="preview ${msgs ? '' : 'loading'}">${escapeAttr(first.slice(0, 360))}</div>
-        <div class="messages"></div>
-        <div class="fade"></div>
       </article>`;
     }).join('');
     for (const c of list) if (state.details.has(c.id)) updateCardDetail(c.id);
@@ -327,29 +495,65 @@
     if (!card) return;
     const msgs = state.details.get(id);
     if (!msgs) return;
-    const preview = card.querySelector('.preview');
-    const messages = card.querySelector('.messages');
+    const chat = state.chats.find(c => c.id === id);
+    const surface = card.querySelector('.cardSurface');
+    const oldPreview = surface.querySelector('.preview, .loadingPreview');
+    const temp = document.createElement('div');
+    temp.innerHTML = previewHTML(msgs);
+    oldPreview?.replaceWith(temp.firstElementChild);
+
     const count = card.querySelector('.count');
-    count.textContent = `${msgs.length} 条消息`;
-    preview.classList.remove('loading');
-    preview.textContent = msgs[0]?.text?.slice(0, 360) || '没有可显示的文本消息';
+    if (count) count.textContent = `${msgs.length} 条消息`;
+    const timeEl = card.querySelector('.createdAt');
+    if (timeEl) {
+      const ms = getCreatedAt(chat);
+      timeEl.textContent = `创建 ${formatDateMs(ms)}`;
+      timeEl.title = formatDateMs(ms, true);
+    }
+
+    const d = buildDigest(msgs);
+    const digest = card.querySelector('.digest');
+    digest.innerHTML = `<div class="digestHead"><b>对话速览</b><span>${escapeAttr(d.stats)}</span></div>
+      <div class="digestRow"><b>开始</b><span title="${escapeAttr(d.first)}">${escapeAttr(d.first || '—')}</span></div>
+      <div class="digestRow"><b>最近</b><span title="${escapeAttr(d.recent)}">${escapeAttr(d.recent || '—')}</span></div>
+      ${d.answer ? `<div class="digestRow"><b>末次回复</b><span title="${escapeAttr(d.answer)}">${escapeAttr(d.answer)}</span></div>` : ''}`;
+
+    const messages = card.querySelector('.messages');
     messages.textContent = '';
-    const max = 60;
+    const max = 80;
     for (const m of msgs.slice(0, max)) {
       const div = document.createElement('div');
       div.className = `msg ${m.role}`;
-      const role = document.createElement('span');
+
+      const role = document.createElement('div');
       role.className = 'role';
-      role.textContent = m.role === 'user' ? '你' : 'ChatGPT';
-      const body = document.createElement('span');
+      const roleName = document.createElement('span');
+      roleName.textContent = m.role === 'user' ? '你' : 'ChatGPT';
+      role.appendChild(roleName);
+      if (m.time) {
+        const t = document.createElement('span');
+        t.textContent = new Intl.DateTimeFormat('zh-CN', { hour:'2-digit', minute:'2-digit' }).format(new Date(m.time));
+        role.appendChild(t);
+      }
+
+      const body = document.createElement('div');
+      body.className = `msgBody ${m.text.length > 420 ? 'long' : ''}`;
       body.textContent = m.text;
       div.append(role, body);
+
+      if (m.text.length > 420) {
+        const toggle = document.createElement('button');
+        toggle.className = 'msgToggle';
+        toggle.dataset.act = 'toggleMsg';
+        toggle.textContent = '展开这条消息';
+        div.appendChild(toggle);
+      }
       messages.appendChild(div);
     }
     if (msgs.length > max) {
       const hint = document.createElement('div');
       hint.className = 'moreHint';
-      hint.textContent = `仅显示前 ${max} 条文本消息 · 双击标题打开完整对话`;
+      hint.textContent = `已显示前 ${max} 条文本消息 · 双击标题打开完整对话`;
       messages.appendChild(hint);
     }
   }
@@ -369,6 +573,37 @@
     archiveBtn.disabled = deleteBtn.disabled = state.selected.size === 0 || state.working;
   }
 
+  function expandCard(card) {
+    if (!card?.isConnected) return;
+    clearTimeout(state.collapseTimer);
+    const id = card.dataset.id;
+    if (state.expandedId && state.expandedId !== id) collapseExpanded(true);
+    const rect = card.getBoundingClientRect();
+    const contentRect = content.getBoundingClientRect();
+    const roomBelow = contentRect.bottom - rect.top;
+    const roomAbove = rect.bottom - contentRect.top;
+    card.classList.toggle('expandUp', roomBelow < EXPANDED_HEIGHT + 8 && roomAbove > roomBelow);
+    card.classList.add('expanded');
+    panel.classList.add('hasExpanded');
+    state.expandedId = id;
+    enqueueDetail(id, true);
+  }
+
+  function collapseExpanded(immediate = false) {
+    clearTimeout(state.hoverTimer);
+    clearTimeout(state.collapseTimer);
+    const run = () => {
+      if (state.expandedId) {
+        const card = grid.querySelector(`.card[data-id="${CSS.escape(state.expandedId)}"]`);
+        card?.classList.remove('expanded', 'expandUp');
+      }
+      state.expandedId = null;
+      panel.classList.remove('hasExpanded');
+    };
+    if (immediate) run();
+    else state.collapseTimer = setTimeout(run, HOVER_COLLAPSE_DELAY_MS);
+  }
+
   async function patchConversation(id, body) {
     const res = await api(`/backend-api/conversation/${encodeURIComponent(id)}`, { method:'PATCH', body:JSON.stringify(body) });
     if (!res.ok) throw new Error(`操作失败 (${res.status})`);
@@ -378,6 +613,7 @@
     if (!ids.length || state.working) return;
     const label = mode === 'delete' ? '删除' : '归档';
     if (mode === 'delete' && !confirm(`确定永久删除选中的 ${ids.length} 个对话吗？\n\n此操作无法在本扩展中撤销。`)) return;
+    collapseExpanded(true);
     state.working = true;
     updateStats();
     let ok = 0;
@@ -394,6 +630,7 @@
         setTimeout(() => {
           state.chats = state.chats.filter(c => c.id !== id);
           state.details.delete(id);
+          state.createdTimes.delete(id);
           render(); observeCards();
         }, 260);
       } catch (e) {
@@ -416,7 +653,7 @@
       if (!state.chats.length) loadNextBatch();
       return;
     }
-    if (act === 'close') { state.opened = false; overlay.classList.remove('open'); return; }
+    if (act === 'close') { collapseExpanded(true); state.opened = false; overlay.classList.remove('open'); return; }
     if (act === 'loadMore') { loadNextBatch(); return; }
     if (act === 'selectVisible') {
       const list = filteredChats();
@@ -426,6 +663,13 @@
     }
     if (act === 'archive') { batchAction('archive', [...state.selected]); return; }
     if (act === 'delete') { batchAction('delete', [...state.selected]); return; }
+    if (act === 'toggleMsg') {
+      const body = e.target.closest('.msg')?.querySelector('.msgBody');
+      if (!body) return;
+      body.classList.toggle('open');
+      e.target.textContent = body.classList.contains('open') ? '收起这条消息' : '展开这条消息';
+      return;
+    }
 
     const card = e.target.closest('.card');
     if (!card) return;
@@ -445,9 +689,22 @@
     if (title && card?.dataset.id) window.open(`/c/${encodeURIComponent(card.dataset.id)}`, '_blank', 'noopener');
   });
 
-  root.addEventListener('mouseover', (e) => {
+  root.addEventListener('pointerover', (e) => {
     const card = e.target.closest('.card');
-    if (card) enqueueDetail(card.dataset.id, true);
+    if (!card) return;
+    if (e.relatedTarget && card.contains(e.relatedTarget)) return;
+    clearTimeout(state.collapseTimer);
+    enqueueDetail(card.dataset.id, true); // start loading immediately, expansion still waits 0.5 s
+    clearTimeout(state.hoverTimer);
+    state.hoverTimer = setTimeout(() => expandCard(card), HOVER_EXPAND_DELAY_MS);
+  });
+
+  root.addEventListener('pointerout', (e) => {
+    const card = e.target.closest('.card');
+    if (!card) return;
+    if (e.relatedTarget && card.contains(e.relatedTarget)) return;
+    clearTimeout(state.hoverTimer);
+    if (state.expandedId === card.dataset.id) collapseExpanded(false);
   });
 
   search.addEventListener('input', () => {
@@ -456,6 +713,7 @@
   });
 
   content.addEventListener('scroll', () => {
+    if (state.expandedId) collapseExpanded(true);
     if (state.loadingList || !state.total || state.offset >= state.total) return;
     if (content.scrollTop + content.clientHeight > content.scrollHeight - 700) loadNextBatch();
   }, { passive:true });
@@ -465,10 +723,12 @@
       e.preventDefault();
       state.opened = !state.opened;
       overlay.classList.toggle('open', state.opened);
+      if (!state.opened) collapseExpanded(true);
       if (state.opened && !state.chats.length) loadNextBatch();
     }
     if (e.key === 'Escape' && state.opened) {
-      state.opened = false; overlay.classList.remove('open');
+      if (state.expandedId) collapseExpanded(true);
+      else { state.opened = false; overlay.classList.remove('open'); }
     }
   });
 })();

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ChatGPT Card Manager",
-  "version": "0.1.0",
-  "description": "Batch-load, preview, archive and delete ChatGPT conversations in animated cards.",
+  "version": "0.2.0",
+  "description": "Batch-load, skim, preview, archive and delete ChatGPT conversations in animated overlay cards.",
   "content_scripts": [
     {
       "matches": ["https://chatgpt.com/*"],
