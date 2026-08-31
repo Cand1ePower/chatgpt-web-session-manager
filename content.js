@@ -5,12 +5,17 @@
   const BATCH_SIZE = 24;
   const LIST_FETCH_MAX = 100;
   const DETAIL_CONCURRENCY = 1;
-  const DETAIL_MIN_INTERVAL_MS = 3200;
-  const MANUAL_DETAIL_INTERVAL_MS = 4500;
+  const DETAIL_MIN_INTERVAL_MS = 900;
   const BACKGROUND_DETAIL_INTERVAL_MS = 9000;
   const LIST_MIN_INTERVAL_MS = 1800;
   const MUTATION_MIN_INTERVAL_MS = 2200;
-  const GLOBAL_MIN_INTERVAL_MS = 900;
+  const MEDIA_MIN_INTERVAL_MS = 900;
+  const GLOBAL_MIN_INTERVAL_MS = 760;
+  const LOAD_SPEEDS = Object.freeze({
+    slow:   { label:'慢', interval:4500, hint:'更稳妥，适合长批次' },
+    normal: { label:'正常', interval:1800, hint:'速度与限流风险平衡' },
+    fast:   { label:'快速', interval:900, hint:'明显更快，限流风险更高' },
+  });
   const MAX_BACKGROUND_QUEUE = 2;
   const AUTO_BACKGROUND_PREFETCH = false;
   const MAX_429_RETRIES = 0;
@@ -41,7 +46,7 @@
     rateLimitUntil: Number(localStorage.getItem('chatdeck:rateLimitUntil') || 0),
     rateLimitHits: Number(localStorage.getItem('chatdeck:rateLimitHits') || 0),
     prefetchDisabledUntil: Number(localStorage.getItem('chatdeck:prefetchDisabledUntil') || 0),
-    adaptiveIntervals: { list: LIST_MIN_INTERVAL_MS, detail: DETAIL_MIN_INTERVAL_MS, mutate: MUTATION_MIN_INTERVAL_MS },
+    adaptiveIntervals: { list: LIST_MIN_INTERVAL_MS, detail: DETAIL_MIN_INTERVAL_MS, mutate: MUTATION_MIN_INTERVAL_MS, media: MEDIA_MIN_INTERVAL_MS },
     queueTimer: null,
     cacheReady: false,
     cacheHits: 0,
@@ -51,6 +56,8 @@
     hoverTimer: null,
     collapseTimer: null,
     morphAnimation: null,
+    morphProxy: null,
+    morphAuxAnimations: [],
     lastManualRequestAt: 0,
     manualLoading: false,
     manualPendingIds: new Set(),
@@ -59,7 +66,15 @@
     manualTotal: 0,
     manualLabel: '',
     loadCountChoice: '10',
+    loadSpeedChoice: localStorage.getItem('chatdeck:loadSpeed') || 'slow',
     countMenuOpen: false,
+    speedMenuOpen: false,
+    fastWarningOpen: false,
+    pendingFastChoice: false,
+    pendingFastLoad: false,
+    fastConfirmedForSession: false,
+    imageUrlCache: new Map(),
+    imagePromises: new Map(),
   };
 
   const host = document.createElement('div');
@@ -330,7 +345,8 @@
       .msg { margin:0 0 10px; padding:10px 11px; border-radius:12px; font-size:12.6px; line-height:1.56; white-space:pre-wrap; word-break:break-word; background:rgba(127,127,127,.075); }
       .msg.user { background:rgba(127,127,127,.145); }
       .role { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:9.5px; font-weight:750; letter-spacing:.04em; opacity:.43; margin-bottom:4px; }
-      .msgBody { position:relative; max-height:132px; overflow:hidden; }
+      .msgBody { position:relative; max-height:none; overflow:visible; }
+      .msgBody.long:not(.open) { max-height:156px; overflow:hidden; }
       .msgBody.long:not(.open)::after { content:""; position:absolute; left:0; right:0; bottom:0; height:28px; background:linear-gradient(transparent, rgba(127,127,127,.11)); pointer-events:none; }
       .msgBody.open { max-height:none; }
       .msgToggle { border:0; padding:3px 0 0; background:transparent; color:inherit; cursor:pointer; font-size:10px; opacity:.55; }
@@ -392,6 +408,135 @@
       .toast { position:absolute; z-index:90; left:50%; bottom:78px; transform:translateX(-50%) translateY(12px); padding:10px 13px; border-radius:12px; background:#171719; color:#fff; font-size:12px; opacity:0; pointer-events:none; transition:.22s ease; box-shadow:0 10px 34px rgba(0,0,0,.25); }
       .toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
       @media (prefers-color-scheme: dark) { .toast { background:#f2f2f3; color:#151517; } }
+
+
+      /* v1.0 polish ------------------------------------------------------- */
+      .content, .messages, .digest, .countMenu, .speedMenu {
+        scrollbar-width:thin;
+        scrollbar-color:rgba(127,127,127,.34) transparent;
+      }
+      .content::-webkit-scrollbar { width:10px; }
+      .messages::-webkit-scrollbar, .digest::-webkit-scrollbar, .countMenu::-webkit-scrollbar, .speedMenu::-webkit-scrollbar { width:8px; }
+      .content::-webkit-scrollbar-track, .messages::-webkit-scrollbar-track, .digest::-webkit-scrollbar-track,
+      .countMenu::-webkit-scrollbar-track, .speedMenu::-webkit-scrollbar-track { background:transparent; }
+      .content::-webkit-scrollbar-thumb, .messages::-webkit-scrollbar-thumb, .digest::-webkit-scrollbar-thumb,
+      .countMenu::-webkit-scrollbar-thumb, .speedMenu::-webkit-scrollbar-thumb {
+        background:rgba(127,127,127,.26); border-radius:999px; border:2px solid transparent; background-clip:padding-box;
+      }
+      .content::-webkit-scrollbar-thumb:hover, .messages::-webkit-scrollbar-thumb:hover, .digest::-webkit-scrollbar-thumb:hover,
+      .countMenu::-webkit-scrollbar-thumb:hover, .speedMenu::-webkit-scrollbar-thumb:hover { background:rgba(127,127,127,.46); background-clip:padding-box; }
+
+      .checkWrap { width:20px; height:20px; margin-top:1px; display:grid; place-items:center; cursor:pointer; position:relative; }
+      .checkWrap .check { position:absolute; opacity:0; width:1px; height:1px; pointer-events:none; }
+      .checkBox {
+        width:18px; height:18px; display:grid; place-items:center; border-radius:6px;
+        border:1px solid rgba(127,127,127,.38); background:rgba(127,127,127,.055);
+        box-shadow:inset 0 1px 0 rgba(255,255,255,.15); transition:transform .15s cubic-bezier(.2,.8,.2,1), background .15s ease, border-color .15s ease, box-shadow .15s ease;
+      }
+      .checkBox svg { width:11px; height:11px; opacity:0; transform:scale(.55); transition:opacity .13s ease, transform .16s cubic-bezier(.2,.8,.2,1); }
+      .checkWrap:hover .checkBox { border-color:rgba(127,127,127,.62); background:rgba(127,127,127,.10); transform:translateY(-1px); }
+      .check:checked + .checkBox { background:currentColor; border-color:currentColor; box-shadow:0 3px 10px rgba(0,0,0,.13); }
+      .check:checked + .checkBox svg { opacity:1; transform:scale(1); color:var(--check-ink,#fff); }
+      @media (prefers-color-scheme: dark) { .check:checked + .checkBox { --check-ink:#171719; background:#f0f0f2; border-color:#f0f0f2; } }
+      .check:focus-visible + .checkBox { outline:2px solid currentColor; outline-offset:2px; }
+
+      .cardActions { display:flex; gap:2px; align-items:center; }
+      .mini { display:grid; place-items:center; }
+      .mini svg { width:14px; height:14px; stroke:currentColor; fill:none; stroke-width:1.75; stroke-linecap:round; stroke-linejoin:round; }
+      .mini.jump:hover { background:rgba(80,110,180,.12); }
+      .mini.trash:hover { background:rgba(220,38,38,.12); color:#c92b2b; }
+
+      /* Real surface never scales during morphing. A disposable proxy performs the geometry animation,
+         so text is rendered at native size before and after the transition with no one-frame shrink flash. */
+      .card.morphing .cardSurface, .card.expanded .cardSurface { will-change:auto; transform:none !important; }
+      .card.collapsing .cardSurface { position:absolute !important; inset:0 !important; width:auto !important; height:170px !important; transform:none !important; will-change:auto; }
+      .card.morphing .cardSurface { opacity:0; }
+      .card.expanded:not(.morphing):not(.collapsing) .cardSurface { opacity:1; }
+      .morphProxy {
+        position:fixed !important; inset:auto !important; z-index:2147483647 !important; margin:0 !important;
+        pointer-events:none !important; overflow:hidden !important; transform-origin:0 0 !important;
+        backface-visibility:hidden; will-change:transform,opacity; contain:paint;
+      }
+      .morphProxy .expandedBody { pointer-events:none !important; }
+      .morphProxy.proxyExpanded .expandedBody { opacity:1 !important; transform:none !important; }
+      .morphProxy.proxyExpanded .preview, .morphProxy.proxyExpanded .loadingPreview, .morphProxy.proxyExpanded .waitingPreview { opacity:0 !important; }
+
+      .msg { white-space:normal; }
+      .msgBody { line-height:1.58; }
+      .md > :first-child { margin-top:0 !important; }
+      .md > :last-child { margin-bottom:0 !important; }
+      .md p { margin:.4em 0 .72em; }
+      .md h1,.md h2,.md h3,.md h4 { margin:.75em 0 .4em; line-height:1.3; letter-spacing:-.01em; }
+      .md h1 { font-size:1.28em; } .md h2 { font-size:1.18em; } .md h3 { font-size:1.08em; } .md h4 { font-size:1em; }
+      .md ul,.md ol { margin:.45em 0 .75em; padding-left:1.45em; }
+      .md li { margin:.2em 0; }
+      .md blockquote { margin:.55em 0; padding:.18em .8em; border-left:3px solid rgba(127,127,127,.34); opacity:.84; background:rgba(127,127,127,.045); border-radius:0 8px 8px 0; }
+      .md code { padding:.12em .34em; border-radius:5px; font:500 .92em/1.45 ui-monospace,SFMono-Regular,Consolas,monospace; background:rgba(127,127,127,.12); }
+      .md pre { margin:.65em 0; padding:10px 11px; border-radius:10px; overflow:auto; background:rgba(18,18,20,.92); color:#f3f3f4; border:1px solid rgba(127,127,127,.18); white-space:pre; }
+      .md pre code { padding:0; background:none; color:inherit; font-size:11.4px; }
+      .md a { color:inherit; text-decoration:underline; text-underline-offset:2px; opacity:.88; }
+      .md img, .mdInlineImage { display:block; max-width:100%; max-height:280px; object-fit:contain; margin:.55em 0; border-radius:10px; border:1px solid rgba(127,127,127,.14); }
+      .md strong { font-weight:720; }
+      .md hr { border:0; height:1px; background:rgba(127,127,127,.18); margin:.8em 0; }
+      .md table { width:100%; border-collapse:collapse; margin:.65em 0; font-size:.94em; }
+      .md th,.md td { border:1px solid rgba(127,127,127,.18); padding:5px 7px; text-align:left; vertical-align:top; }
+      .md th { background:rgba(127,127,127,.08); font-weight:700; }
+
+      .mediaGrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(96px,1fr)); gap:7px; margin-top:8px; }
+      .mediaTile { position:relative; cursor:zoom-in; aspect-ratio:4/3; min-height:82px; border-radius:10px; overflow:hidden; background:rgba(127,127,127,.10); border:1px solid rgba(127,127,127,.12); }
+      .mediaTile img { width:100%; height:100%; object-fit:cover; display:block; opacity:0; transition:opacity .18s ease, transform .22s ease; }
+      .mediaTile.loaded img { opacity:1; }
+      .mediaTile:hover img { transform:scale(1.025); }
+      .mediaTile .imageSkeleton { position:absolute; inset:0; background:linear-gradient(105deg, rgba(127,127,127,.07) 22%, rgba(127,127,127,.18) 42%, rgba(127,127,127,.07) 62%); background-size:220% 100%; animation:shimmer 1.25s ease-in-out infinite; }
+      .mediaTile.loaded .imageSkeleton { display:none; }
+      .mediaTile.failed::after { content:"图片暂不可用"; position:absolute; inset:0; display:grid; place-items:center; font-size:10px; opacity:.45; }
+      .mediaTile.failed .imageSkeleton { display:none; }
+      .compactMedia { position:absolute; right:13px; bottom:12px; width:38px; height:30px; border-radius:8px; overflow:hidden; border:1px solid rgba(127,127,127,.18); background:rgba(127,127,127,.10); opacity:.72; display:none; }
+      .compactMedia.show { display:block; }
+      .card.expanded .compactMedia { display:none !important; }
+      .compactMedia img { width:100%; height:100%; object-fit:cover; opacity:0; transition:opacity .18s ease; }
+      .compactMedia.loaded img { opacity:1; }
+
+      .loadCombo { min-width:214px; }
+      .loadCountBtn { gap:0; padding-left:13px; }
+      .loadButtonCopy b { font-size:12px; }
+      .loadSpeedMeta { margin-top:3px; font-size:9.5px; font-weight:520; opacity:.5; white-space:nowrap; }
+      .countMenu { width:244px; overflow:visible; }
+      .menuDivider { height:1px; margin:5px 4px; background:rgba(127,127,127,.14); }
+      .menuSectionLabel { padding:4px 9px 5px; font-size:9px; font-weight:750; letter-spacing:.08em; text-transform:uppercase; opacity:.34; }
+      .speedEntry { position:relative; }
+      .speedOptionTrigger { width:100%; min-height:40px; padding:7px 9px; border:0; border-radius:10px; color:inherit; background:transparent; cursor:pointer; display:grid; grid-template-columns:1fr auto; align-items:center; gap:8px; text-align:left; transition:.14s ease; }
+      .speedOptionTrigger:hover, .speedEntry.open .speedOptionTrigger { background:rgba(127,127,127,.11); }
+      .speedOptionTrigger b { font-size:11.5px; font-weight:680; }
+      .speedCurrent { font-size:10px; opacity:.54; display:flex; align-items:center; gap:7px; }
+      .speedCurrent::after { content:"›"; font-size:17px; line-height:1; opacity:.6; }
+      .speedMenu {
+        position:absolute; left:calc(100% + 8px); bottom:-6px; width:212px; padding:6px; border-radius:14px;
+        border:1px solid rgba(127,127,127,.18); background:rgba(248,248,247,.98); box-shadow:0 18px 50px rgba(0,0,0,.18);
+        backdrop-filter:blur(22px); -webkit-backdrop-filter:blur(22px); opacity:0; visibility:hidden; pointer-events:none;
+        transform:translateX(-7px) scale(.96); transform-origin:0 85%; transition:opacity .14s ease, transform .22s cubic-bezier(.16,1,.3,1), visibility 0s linear .22s;
+      }
+      .speedEntry.open .speedMenu { opacity:1; visibility:visible; pointer-events:auto; transform:translateX(0) scale(1); transition:opacity .14s ease, transform .22s cubic-bezier(.16,1,.3,1), visibility 0s; }
+      @media (prefers-color-scheme: dark) { .speedMenu { background:rgba(34,34,36,.98); border-color:rgba(255,255,255,.12); } }
+      .speedChoice { width:100%; min-height:44px; padding:7px 9px; border:0; border-radius:10px; color:inherit; background:transparent; cursor:pointer; display:grid; grid-template-columns:1fr auto; gap:8px; text-align:left; transition:.14s ease; }
+      .speedChoice:hover { background:rgba(127,127,127,.11); transform:translateX(2px); }
+      .speedChoice b { display:block; font-size:11.5px; }
+      .speedChoice small { display:block; margin-top:2px; font-size:9.3px; opacity:.43; }
+      .speedChoice .optionCheck { align-self:center; width:17px; height:17px; border-radius:50%; display:grid; place-items:center; background:rgba(127,127,127,.14); opacity:0; transform:scale(.7); transition:.15s ease; font-size:10px; }
+      .speedChoice.active { background:rgba(127,127,127,.08); }
+      .speedChoice.active .optionCheck { opacity:.78; transform:scale(1); }
+
+      .confirmVeil { position:absolute; inset:0; z-index:220; display:none; align-items:center; justify-content:center; padding:20px; background:rgba(10,10,12,.24); backdrop-filter:blur(5px); }
+      .confirmVeil.show { display:flex; animation:fadeIn .14s ease-out; }
+      .confirmBox { width:min(420px,calc(100% - 30px)); padding:18px; border-radius:18px; color:inherit; background:rgba(248,248,247,.98); border:1px solid rgba(127,127,127,.18); box-shadow:0 24px 70px rgba(0,0,0,.28); }
+      @media (prefers-color-scheme: dark) { .confirmBox { background:rgba(31,31,33,.98); border-color:rgba(255,255,255,.12); } }
+      .confirmIcon { width:36px; height:36px; border-radius:11px; display:grid; place-items:center; margin-bottom:11px; background:rgba(220,120,40,.12); color:#b45b12; font-weight:800; }
+      .confirmBox h3 { margin:0; font-size:15px; }
+      .confirmBox p { margin:8px 0 15px; font-size:12px; line-height:1.58; opacity:.68; }
+      .confirmActions { display:flex; justify-content:flex-end; gap:8px; }
+      .btn.warn { background:rgba(220,120,40,.13); color:#a84d08; }
+      .btn.warn:hover { background:rgba(220,120,40,.20); }
+
     </style>
     <button class="launcher" title="ChatGPT 对话卡片管理器" aria-label="打开对话管理器"><span class="gridIcon"><i></i><i></i><i></i><i></i></span></button>
     <div class="overlay">
@@ -411,16 +556,26 @@
           <div class="stats">尚未加载</div>
           <div class="loadGroup">
             <div class="loadCombo">
-              <button class="loadCountBtn" data-act="loadCount" type="button" title="从当前未加载的卡片开始继续读取正文">
-                <span class="loadOrb"></span><span class="loadButtonCopy"><b class="loadCountLabel">加载 10 个未加载</b><span>已加载的会自动跳过</span></span>
+              <button class="loadCountBtn" data-act="loadCount" type="button" title="从尚未读取正文的卡片开始继续加载">
+                <span class="loadButtonCopy"><b class="loadCountLabel">加载 10 个</b><span class="loadSpeedMeta">慢速 · 已加载自动跳过</span></span>
               </button>
-              <button class="countToggle" data-act="toggleCountMenu" type="button" aria-label="选择加载数量" aria-expanded="false"><span class="chevron"></span></button>
-              <div class="countMenu" role="menu" aria-label="选择批量读取数量">
-                <button class="countOption active" data-count="10" role="menuitem" type="button"><span class="optionCopy"><b>10 个</b><small>快速补全一小批</small></span><span class="optionCheck">✓</span></button>
+              <button class="countToggle" data-act="toggleCountMenu" type="button" aria-label="加载设置" aria-expanded="false"><span class="chevron"></span></button>
+              <div class="countMenu" role="menu" aria-label="批量加载设置">
+                <div class="menuSectionLabel">加载数量</div>
+                <button class="countOption active" data-count="10" role="menuitem" type="button"><span class="optionCopy"><b>10 个</b><small>处理一小批对话</small></span><span class="optionCheck">✓</span></button>
                 <button class="countOption" data-count="30" role="menuitem" type="button"><span class="optionCopy"><b>30 个</b><small>适合连续整理</small></span><span class="optionCheck">✓</span></button>
-                <button class="countOption" data-count="50" role="menuitem" type="button"><span class="optionCopy"><b>50 个</b><small>较大批次，保持限速</small></span><span class="optionCheck">✓</span></button>
-                <button class="countOption" data-count="100" role="menuitem" type="button"><span class="optionCopy"><b>100 个</b><small>长批次后台顺序读取</small></span><span class="optionCheck">✓</span></button>
-                <button class="countOption" data-count="all" role="menuitem" type="button"><span class="optionCopy"><b>全部未加载</b><small>先补全列表，再读取剩余正文</small></span><span class="optionCheck">✓</span></button>
+                <button class="countOption" data-count="50" role="menuitem" type="button"><span class="optionCopy"><b>50 个</b><small>中等批次</small></span><span class="optionCheck">✓</span></button>
+                <button class="countOption" data-count="100" role="menuitem" type="button"><span class="optionCopy"><b>100 个</b><small>较长批次</small></span><span class="optionCheck">✓</span></button>
+                <button class="countOption" data-count="all" role="menuitem" type="button"><span class="optionCopy"><b>全部</b><small>读取剩余全部对话</small></span><span class="optionCheck">✓</span></button>
+                <div class="menuDivider"></div>
+                <div class="speedEntry">
+                  <button class="speedOptionTrigger" data-act="toggleSpeedMenu" role="menuitem" type="button"><span><b>加载速度</b></span><span class="speedCurrent">慢</span></button>
+                  <div class="speedMenu" role="menu" aria-label="选择加载速度">
+                    <button class="speedChoice active" data-speed="slow" type="button"><span><b>慢</b><small>当前方案，更稳妥</small></span><span class="optionCheck">✓</span></button>
+                    <button class="speedChoice" data-speed="normal" type="button"><span><b>正常</b><small>约 1.8 秒 / 条</small></span><span class="optionCheck">✓</span></button>
+                    <button class="speedChoice" data-speed="fast" type="button"><span><b>快速</b><small>约 0.9 秒 / 条，有限流风险</small></span><span class="optionCheck">✓</span></button>
+                  </div>
+                </div>
               </div>
             </div>
             <button class="btn" data-act="loadMore">加载更多列表</button>
@@ -430,6 +585,12 @@
           <button class="btn danger" data-act="delete">删除所选</button>
           <div class="progress"></div>
         </footer>
+        <div class="confirmVeil" role="dialog" aria-modal="true" aria-labelledby="fastWarnTitle">
+          <div class="confirmBox"><div class="confirmIcon">!</div><h3 id="fastWarnTitle">快速加载可能触发官方限流</h3>
+            <p>快速模式会明显缩短对话详情请求间隔。ChatGPT 的网页内部接口没有公开固定限额，短时间请求过多可能返回 429。扩展仍会保留最低间隔和 429 熔断保护。</p>
+            <div class="confirmActions"><button class="btn" data-act="cancelFast" type="button">取消</button><button class="btn warn" data-act="confirmFast" type="button">仍然选择快速</button></div>
+          </div>
+        </div>
         <div class="toast"></div>
       </section>
     </div>
@@ -450,6 +611,10 @@
   const loadCombo = $('.loadCombo');
   const countToggle = $('[data-act="toggleCountMenu"]');
   const countMenu = $('.countMenu');
+  const speedEntry = $('.speedEntry');
+  const speedCurrent = $('.speedCurrent');
+  const loadSpeedMeta = $('.loadSpeedMeta');
+  const confirmVeil = $('.confirmVeil');
   const listSentinel = $('.listSentinel');
   const rateBanner = $('.rateBanner');
   const rateDetail = $('.rateDetail');
@@ -545,6 +710,17 @@
     localStorage.setItem('chatdeck:prefetchDisabledUntil', String(state.prefetchDisabledUntil || 0));
   }
 
+  function intervalBase(kind) {
+    if (kind === 'list') return LIST_MIN_INTERVAL_MS;
+    if (kind === 'mutate') return MUTATION_MIN_INTERVAL_MS;
+    if (kind === 'media') return MEDIA_MIN_INTERVAL_MS;
+    return DETAIL_MIN_INTERVAL_MS;
+  }
+
+  function manualDetailInterval() {
+    return LOAD_SPEEDS[state.loadSpeedChoice]?.interval || LOAD_SPEEDS.slow.interval;
+  }
+
   function friendlyHttpError(status, context = '请求') {
     if (Number(status) === 429) return '请求过多，请稍后再试';
     return `${context}失败 (${status})`;
@@ -586,7 +762,7 @@
     state.rateLimitUntil = Math.max(state.rateLimitUntil, Date.now() + ms);
     // Any 429 disables speculative/background reads for a long while. User-initiated hover reads still work after cooldown.
     state.prefetchDisabledUntil = Math.max(state.prefetchDisabledUntil, Date.now() + PREFETCH_DISABLE_AFTER_429_MS);
-    const base = kind === 'list' ? LIST_MIN_INTERVAL_MS : kind === 'mutate' ? MUTATION_MIN_INTERVAL_MS : DETAIL_MIN_INTERVAL_MS;
+    const base = intervalBase(kind);
     state.adaptiveIntervals[kind] = Math.min(15000, Math.max(base, Math.round((state.adaptiveIntervals[kind] || base) * 1.7)));
     persistRateState();
     abortManualBatchForRateLimit();
@@ -601,7 +777,7 @@
   }
 
   async function reserveRequestSlot(kind) {
-    const base = kind === 'list' ? LIST_MIN_INTERVAL_MS : kind === 'mutate' ? MUTATION_MIN_INTERVAL_MS : DETAIL_MIN_INTERVAL_MS;
+    const base = intervalBase(kind);
     const key = `chatdeck:last:${kind}`;
     while (true) {
       const reserve = async () => {
@@ -633,7 +809,7 @@
   }
 
   function relaxInterval(kind) {
-    const base = kind === 'list' ? LIST_MIN_INTERVAL_MS : kind === 'mutate' ? MUTATION_MIN_INTERVAL_MS : DETAIL_MIN_INTERVAL_MS;
+    const base = intervalBase(kind);
     const current = state.adaptiveIntervals[kind] || base;
     state.adaptiveIntervals[kind] = Math.max(base, Math.round(current * 0.92));
     if (state.rateLimitHits > 0 && Date.now() > state.rateLimitUntil + 30000) {
@@ -693,7 +869,7 @@
     const db = await openCacheDb();
     if (!db || !parsed?.messages) return;
     const value = {
-      id, messages: parsed.messages, createdAt: parsed.createdAt || getListCreatedAt(chat) || 0,
+      id, messages: parsed.messages, mediaSchema:2, createdAt: parsed.createdAt || getListCreatedAt(chat) || 0,
       listUpdatedAt: getListUpdatedAt(chat), cachedAt: Date.now()
     };
     return new Promise(resolve => {
@@ -802,8 +978,50 @@
     if (typeof part === 'string') return part;
     if (part == null) return '';
     if (typeof part === 'number' || typeof part === 'boolean') return String(part);
-    if (part?.text) return String(part.text);
+    if (typeof part?.text === 'string') return part.text;
     return '';
+  }
+
+  function imageDescriptorFromPart(part) {
+    if (!part || typeof part !== 'object') return null;
+    const type = String(part.content_type || part.type || '');
+    const assetPointer = String(part.asset_pointer || part.assetPointer || '');
+    let url = '';
+    if (typeof part.image_url === 'string') url = part.image_url;
+    else if (typeof part.image_url?.url === 'string') url = part.image_url.url;
+    else if (typeof part.url === 'string') url = part.url;
+    if (!assetPointer && !url && !/image/i.test(type)) return null;
+    const fileMatch = assetPointer.match(/^file-service:\/\/(.+)$/i);
+    const sedimentMatch = assetPointer.match(/^sediment:\/\/(.+)$/i);
+    return {
+      assetPointer,
+      fileId: fileMatch ? fileMatch[1] : '',
+      sedimentId: sedimentMatch ? sedimentMatch[1] : '',
+      url: /^(https?:|data:|blob:)/i.test(url) ? url : '',
+      width: Number(part.width || part.image_width || 0) || 0,
+      height: Number(part.height || part.image_height || 0) || 0,
+      alt: String(part.alt || part.name || '对话图片'),
+    };
+  }
+
+  function imageDescriptorFromAttachment(att) {
+    if (!att || typeof att !== 'object') return null;
+    const name = String(att.name || att.file_name || att.filename || '');
+    const mime = String(att.mime_type || att.mimeType || att.content_type || '');
+    const isImage = /^image\//i.test(mime) || /\.(png|jpe?g|webp|gif|avif|bmp)$/i.test(name);
+    if (!isImage) return null;
+    const id = String(att.id || att.file_id || att.fileId || '');
+    const raw = String(att.asset_pointer || att.assetPointer || '');
+    const fileMatch = raw.match(/^file-service:\/\/(.+)$/i);
+    return {
+      assetPointer: raw || (id ? `file-service://${id}` : ''),
+      fileId: fileMatch ? fileMatch[1] : id,
+      sedimentId: '',
+      url: /^(https?:|data:|blob:)/i.test(String(att.url || '')) ? String(att.url) : '',
+      width: Number(att.width || 0) || 0,
+      height: Number(att.height || 0) || 0,
+      alt: name || '图片附件',
+    };
   }
 
   function cleanText(text, max = Infinity) {
@@ -825,12 +1043,32 @@
     let seq = 0;
     for (const node of Object.values(mapping)) {
       const m = node?.message;
-      const role = m?.author?.role;
-      if (!m || !['user', 'assistant'].includes(role)) continue;
+      const rawRole = m?.author?.role;
+      if (!m || !['user', 'assistant', 'tool'].includes(rawRole)) continue;
       const parts = Array.isArray(m?.content?.parts) ? m.content.parts : [];
       const text = parts.map(textFromPart).filter(Boolean).join('\n').trim();
-      if (!text) continue;
-      messages.push({ role, text, time: normalizeTimestamp(m.create_time ?? m.createTime), seq: seq++ });
+      const images = [];
+      for (const part of parts) {
+        const img = imageDescriptorFromPart(part);
+        if (img) images.push(img);
+      }
+      const attachments = Array.isArray(m?.metadata?.attachments) ? m.metadata.attachments : [];
+      for (const att of attachments) {
+        const img = imageDescriptorFromAttachment(att);
+        if (img) images.push(img);
+      }
+      const dedup = [];
+      const seen = new Set();
+      for (const img of images) {
+        const key = img.fileId || img.assetPointer || img.url;
+        if (!key || seen.has(key)) continue;
+        seen.add(key); dedup.push(img);
+      }
+      if (!text && !dedup.length) continue;
+      // Generated images can be emitted as tool messages. Present image-bearing tool nodes as ChatGPT output.
+      if (rawRole === 'tool' && !dedup.length) continue;
+      const role = rawRole === 'tool' ? 'assistant' : rawRole;
+      messages.push({ role, text, images:dedup, time: normalizeTimestamp(m.create_time ?? m.createTime), seq: seq++ });
     }
     messages.sort((a,b) => {
       if (a.time && b.time) return a.time - b.time;
@@ -843,6 +1081,87 @@
     );
     const earliestMessage = messages.reduce((min, m) => m.time && (!min || m.time < min) ? m.time : min, 0);
     return { messages, createdAt: explicitCreated || earliestMessage || 0 };
+  }
+
+  function imageKey(img) {
+    return String(img?.fileId || img?.sedimentId || img?.assetPointer || img?.url || '');
+  }
+
+  async function resolveImageUrl(img, conversationId) {
+    if (!img) return '';
+    if (img.url && /^(https?:|data:|blob:)/i.test(img.url)) return img.url;
+    const key = imageKey(img);
+    if (!key) return '';
+    if (state.imageUrlCache.has(key)) return state.imageUrlCache.get(key);
+    if (state.imagePromises.has(key)) return state.imagePromises.get(key);
+
+    const promise = (async () => {
+      const paths = [];
+      if (img.fileId) {
+        paths.push(`/backend-api/files/download/${encodeURIComponent(img.fileId)}?conversation_id=${encodeURIComponent(conversationId)}&inline=true`);
+        paths.push(`/backend-api/files/${encodeURIComponent(img.fileId)}/download`);
+      }
+      if (img.sedimentId) {
+        paths.push(`/backend-api/conversation/${encodeURIComponent(conversationId)}/attachment/${encodeURIComponent(img.sedimentId)}/download`);
+      }
+      for (const path of paths) {
+        try {
+          const res = await apiWith429Retry(path, {}, 0, 'media');
+          if (res.status === 429) return '';
+          if (!res.ok) continue;
+          const data = await res.json().catch(() => ({}));
+          const url = String(data?.download_url || data?.url || '');
+          if (/^https?:/i.test(url)) {
+            state.imageUrlCache.set(key, url);
+            return url;
+          }
+        } catch (_) {}
+      }
+      return '';
+    })().finally(() => state.imagePromises.delete(key));
+    state.imagePromises.set(key, promise);
+    return promise;
+  }
+
+  async function hydrateMediaForCard(conversationId, limit = 8) {
+    const card = grid.querySelector(`.card[data-id="${CSS.escape(conversationId)}"]`);
+    const msgs = state.details.get(conversationId);
+    if (!card || !msgs) return;
+    const tiles = [...card.querySelectorAll('.mediaTile[data-msg-index][data-image-index]')].slice(0, limit);
+    let firstUrl = '';
+    for (const tile of tiles) {
+      if (!card.isConnected) break;
+      const mi = Number(tile.dataset.msgIndex);
+      const ii = Number(tile.dataset.imageIndex);
+      const img = msgs?.[mi]?.images?.[ii];
+      if (!img) { tile.classList.add('failed'); continue; }
+      const url = await resolveImageUrl(img, conversationId);
+      if (!url) { tile.classList.add('failed'); continue; }
+      firstUrl ||= url;
+      const image = tile.querySelector('img');
+      if (image) {
+        image.addEventListener('load', () => tile.classList.add('loaded'), { once:true });
+        image.addEventListener('error', () => tile.classList.add('failed'), { once:true });
+        image.src = url;
+      }
+      tile.dataset.url = url;
+      tile.title = '点击查看原图';
+    }
+    if (!firstUrl) {
+      outer: for (const m of msgs) for (const img of (m.images || [])) {
+        firstUrl = await resolveImageUrl(img, conversationId);
+        if (firstUrl) break outer;
+      }
+    }
+    if (firstUrl) {
+      const compact = card.querySelector('.compactMedia');
+      const image = compact?.querySelector('img');
+      if (compact && image) {
+        compact.classList.add('show');
+        image.addEventListener('load', () => compact.classList.add('loaded'), { once:true });
+        image.src = firstUrl;
+      }
+    }
   }
 
   function updateCardLoadState(chatId) {
@@ -876,6 +1195,30 @@
       const tmp = document.createElement('div'); tmp.innerHTML = waitingPreviewHTML(chatId); current.replaceWith(tmp.firstElementChild);
     }
     if (card.classList.contains('expanded') && !msgs) setExpandedLoading(card, isLoading);
+  }
+
+  function needsMediaRefresh(msgs) {
+    return Array.isArray(msgs) && msgs.some(m => !Array.isArray(m.images));
+  }
+
+  async function refreshDetailForMedia(chatId) {
+    const current = state.details.get(chatId);
+    if (!current || !needsMediaRefresh(current) || state.detailPromises.has(chatId)) return;
+    const chat = state.chats.find(c => c.id === chatId);
+    const p = (async () => {
+      try {
+        const res = await apiWith429Retry(`/backend-api/conversation/${encodeURIComponent(chatId)}`, {}, 0, 'detail');
+        if (!res.ok) return;
+        const parsed = parseConversation(await res.json());
+        state.details.set(chatId, parsed.messages);
+        if (parsed.createdAt) state.createdTimes.set(chatId, parsed.createdAt);
+        await cachePut(chatId, parsed, chat);
+        updateCardDetail(chatId);
+      } catch (_) {}
+      finally { state.detailPromises.delete(chatId); }
+    })();
+    state.detailPromises.set(chatId, p);
+    await p;
   }
 
   async function enqueueDetail(chatId, source = 'background') {
@@ -948,7 +1291,7 @@
     }
 
     if (isManual) {
-      const manualSpacing = MANUAL_DETAIL_INTERVAL_MS - (Date.now() - state.lastManualRequestAt);
+      const manualSpacing = manualDetailInterval() - (Date.now() - state.lastManualRequestAt);
       if (manualSpacing > 0) {
         state.queueTimer = setTimeout(pumpQueue, manualSpacing + 50);
         return;
@@ -1064,18 +1407,65 @@
   function setCountChoice(value) {
     const allowed = new Set(['10','30','50','100','all']);
     state.loadCountChoice = allowed.has(String(value)) ? String(value) : '10';
-    const label = state.loadCountChoice === 'all' ? '加载全部未加载' : `加载 ${state.loadCountChoice} 个未加载`;
-    loadCountLabel.textContent = label;
+    loadCountLabel.textContent = state.loadCountChoice === 'all' ? '加载全部' : `加载 ${state.loadCountChoice} 个`;
     countMenu.querySelectorAll('.countOption').forEach(btn => btn.classList.toggle('active', btn.dataset.count === state.loadCountChoice));
+  }
+
+  function applySpeedChoice(value) {
+    const next = LOAD_SPEEDS[value] ? value : 'slow';
+    state.loadSpeedChoice = next;
+    localStorage.setItem('chatdeck:loadSpeed', next);
+    const profile = LOAD_SPEEDS[next];
+    speedCurrent.textContent = profile.label;
+    const speedDisplay = next === 'slow' ? '慢速' : next === 'normal' ? '正常' : '快速';
+    loadSpeedMeta.textContent = `${speedDisplay} · 已加载自动跳过`;
+    countMenu.querySelectorAll('.speedChoice').forEach(btn => btn.classList.toggle('active', btn.dataset.speed === next));
+  }
+
+  function setSpeedMenu(open) {
+    state.speedMenuOpen = !!open;
+    speedEntry?.classList.toggle('open', state.speedMenuOpen);
   }
 
   function setCountMenu(open) {
     state.countMenuOpen = !!open;
     loadCombo.classList.toggle('menuOpen', state.countMenuOpen);
     countToggle.setAttribute('aria-expanded', state.countMenuOpen ? 'true' : 'false');
+    if (!state.countMenuOpen) setSpeedMenu(false);
+  }
+
+  function requestSpeedChoice(value) {
+    if (!LOAD_SPEEDS[value]) return;
+    if (value !== 'fast') {
+      applySpeedChoice(value);
+      setSpeedMenu(false);
+      return;
+    }
+    state.pendingFastChoice = true;
+    state.fastWarningOpen = true;
+    confirmVeil.classList.add('show');
+  }
+
+  function closeFastWarning(confirmed = false) {
+    confirmVeil.classList.remove('show');
+    state.fastWarningOpen = false;
+    if (confirmed) state.fastConfirmedForSession = true;
+    if (confirmed && state.pendingFastChoice) applySpeedChoice('fast');
+    const resumeLoad = confirmed && state.pendingFastLoad;
+    state.pendingFastChoice = false;
+    state.pendingFastLoad = false;
+    if (confirmed) { setSpeedMenu(false); setCountMenu(false); }
+    if (resumeLoad) setTimeout(() => loadCountDetails(), 0);
   }
 
   async function loadCountDetails() {
+    if (state.loadSpeedChoice === 'fast' && !state.fastConfirmedForSession) {
+      state.pendingFastLoad = true;
+      state.pendingFastChoice = true;
+      state.fastWarningOpen = true;
+      confirmVeil.classList.add('show');
+      return;
+    }
     collapseExpanded(true);
     const raw = state.loadCountChoice;
     const wantAll = raw === 'all';
@@ -1105,11 +1495,84 @@
     return state.chats.filter(c => {
       if ((c.title || '').toLowerCase().includes(q)) return true;
       const msgs = state.details.get(c.id);
-      return msgs?.some(m => m.text.toLowerCase().includes(q));
+      return msgs?.some(m => String(m.text || '').toLowerCase().includes(q));
     });
   }
 
   function escapeAttr(s='') { return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+  function escapeHtml(s='') {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
+  function inlineMarkdown(text='') {
+    const tokens = [];
+    const stash = html => `\u0000${tokens.push(html)-1}\u0000`;
+    let src = String(text);
+    src = src.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g, (_, alt, url) => stash(`<img class="mdInlineImage" src="${escapeHtml(url)}" alt="${escapeHtml(alt || '图片')}" loading="lazy">`));
+    src = src.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, label, url) => stash(`<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`));
+    src = src.replace(/`([^`\n]+)`/g, (_, code) => stash(`<code>${escapeHtml(code)}</code>`));
+    let out = escapeHtml(src);
+    out = out.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+             .replace(/__([^_\n]+)__/g, '<strong>$1</strong>')
+             .replace(/~~([^~\n]+)~~/g, '<del>$1</del>')
+             .replace(/(^|[\s(])\*([^*\n]+)\*(?=$|[\s).,!?:;])/g, '$1<em>$2</em>')
+             .replace(/(^|[\s(])_([^_\n]+)_(?=$|[\s).,!?:;])/g, '$1<em>$2</em>');
+    out = out.replace(/\u0000(\d+)\u0000/g, (_, i) => tokens[Number(i)] || '');
+    return out;
+  }
+
+  function markdownToHtml(markdown='') {
+    const lines = String(markdown || '').replace(/\r\n?/g,'\n').split('\n');
+    const html = [];
+    let i = 0;
+    const isTableSep = line => /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line || '');
+    const cells = line => String(line).trim().replace(/^\||\|$/g,'').split('|').map(x => x.trim());
+    while (i < lines.length) {
+      const line = lines[i];
+      if (!line.trim()) { i++; continue; }
+      const fence = line.match(/^\s*```([^\s`]*)\s*$/);
+      if (fence) {
+        const lang = fence[1] || '';
+        const code = [];
+        i++;
+        while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) code.push(lines[i++]);
+        if (i < lines.length) i++;
+        html.push(`<pre${lang ? ` data-lang="${escapeHtml(lang)}"` : ''}><code>${escapeHtml(code.join('\n'))}</code></pre>`);
+        continue;
+      }
+      if (i + 1 < lines.length && line.includes('|') && isTableSep(lines[i+1])) {
+        const head = cells(line); i += 2; const rows=[];
+        while (i < lines.length && lines[i].trim() && lines[i].includes('|')) rows.push(cells(lines[i++]));
+        html.push(`<table><thead><tr>${head.map(c=>`<th>${inlineMarkdown(c)}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${r.map(c=>`<td>${inlineMarkdown(c)}</td>`).join('')}</tr>`).join('')}</tbody></table>`);
+        continue;
+      }
+      const heading = line.match(/^\s*(#{1,4})\s+(.+)$/);
+      if (heading) { const n=heading[1].length; html.push(`<h${n}>${inlineMarkdown(heading[2])}</h${n}>`); i++; continue; }
+      if (/^\s*(---+|___+|\*\*\*+)\s*$/.test(line)) { html.push('<hr>'); i++; continue; }
+      if (/^\s*>\s?/.test(line)) {
+        const q=[]; while (i<lines.length && /^\s*>\s?/.test(lines[i])) q.push(lines[i++].replace(/^\s*>\s?/,''));
+        html.push(`<blockquote>${q.map(inlineMarkdown).join('<br>')}</blockquote>`); continue;
+      }
+      const ul = line.match(/^\s*[-*+]\s+(.+)$/);
+      const ol = line.match(/^\s*\d+[.)]\s+(.+)$/);
+      if (ul || ol) {
+        const ordered=!!ol, items=[];
+        while (i<lines.length) {
+          const m = ordered ? lines[i].match(/^\s*\d+[.)]\s+(.+)$/) : lines[i].match(/^\s*[-*+]\s+(.+)$/);
+          if (!m) break; items.push(m[1]); i++;
+        }
+        const tag=ordered?'ol':'ul'; html.push(`<${tag}>${items.map(x=>`<li>${inlineMarkdown(x)}</li>`).join('')}</${tag}>`); continue;
+      }
+      const para=[line.trim()]; i++;
+      while (i<lines.length && lines[i].trim()) {
+        if (/^\s*```/.test(lines[i]) || /^\s*(#{1,4})\s+/.test(lines[i]) || /^\s*>/.test(lines[i]) || /^\s*[-*+]\s+/.test(lines[i]) || /^\s*\d+[.)]\s+/.test(lines[i])) break;
+        para.push(lines[i].trim()); i++;
+      }
+      html.push(`<p>${para.map(inlineMarkdown).join('<br>')}</p>`);
+    }
+    return html.join('');
+  }
 
   function buildDigest(msgs) {
     const user = msgs.filter(m => m.role === 'user');
@@ -1117,12 +1580,13 @@
     const first = user[0]?.text || msgs[0]?.text || '';
     const lastUser = user[user.length - 1]?.text || first;
     const lastAnswer = assistant[assistant.length - 1]?.text || '';
-    const chars = msgs.reduce((n, m) => n + m.text.length, 0);
+    const chars = msgs.reduce((n, m) => n + String(m.text || '').length, 0);
+    const images = msgs.reduce((n, m) => n + (m.images?.length || 0), 0);
     return {
       first: cleanText(first, 220),
       recent: cleanText(lastUser, 220),
       answer: cleanText(lastAnswer, 260),
-      stats: `${user.length} 次提问 · ${assistant.length} 次回复 · ${chars.toLocaleString('zh-CN')} 字`,
+      stats: `${user.length} 次提问 · ${assistant.length} 次回复${images ? ` · ${images} 张图片` : ''} · ${chars.toLocaleString('zh-CN')} 字`,
     };
   }
 
@@ -1194,14 +1658,18 @@
       return `<article class="card ${selected ? 'selected' : ''} ${msgs ? 'loaded' : 'unloaded'} ${loadState.cls === 'loading' ? 'contentLoading' : ''}" data-id="${escapeAttr(c.id)}">
         <div class="cardSurface">
           <div class="cardHead">
-            <input class="check" type="checkbox" ${selected ? 'checked' : ''} aria-label="选择对话" />
+            <label class="checkWrap" title="选择对话"><input class="check" type="checkbox" ${selected ? 'checked' : ''} aria-label="选择对话" /><span class="checkBox"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 8.2 6.5 11.3 12.9 4.8" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></label>
             <div class="titleWrap">
               <div class="title" title="双击打开原对话">${escapeAttr(c.title || '无标题对话')}</div>
               <div class="meta"><span class="createdAt" title="${escapeAttr(formatDateMs(createdAt, true))}">创建 ${escapeAttr(formatDateMs(createdAt))}</span><span class="metaSep ${metaHidden}">·</span><span class="count ${metaHidden}">${count}</span><span class="contentState ${loadState.cls}">${chipHtml}</span></div>
             </div>
-            <button class="mini" data-act="singleDelete" title="删除">×</button>
+            <div class="cardActions">
+              <button class="mini jump" data-act="openConversation" title="弹窗查看原对话" aria-label="弹窗查看原对话"><svg viewBox="0 0 20 20"><path d="M8 4H5.5A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16h9a1.5 1.5 0 0 0 1.5-1.5V12"/><path d="M11 4h5v5M16 4l-7 7"/></svg></button>
+              <button class="mini trash" data-act="singleDelete" title="删除" aria-label="删除对话"><svg viewBox="0 0 20 20"><path d="M4 6h12M8 3.5h4M6.3 6l.55 10h6.3l.55-10M8.4 8.5v5M11.6 8.5v5"/></svg></button>
+            </div>
           </div>
           ${msgs ? previewHTML(msgs) : (state.loadingIds.has(c.id) ? loadingPreviewHTML() : waitingPreviewHTML(c.id))}
+          <div class="compactMedia"><img alt="对话图片缩略图"></div>
           <div class="expandedBody"><div class="digest"></div><div class="messages"></div></div>
           <div class="fade"></div>
         </div>
@@ -1228,7 +1696,7 @@
     const count = card.querySelector('.count');
     if (count) count.textContent = `${msgs.length} 条消息`;
     const chip = card.querySelector('.contentState');
-    if (chip) { chip.className = 'contentState ready'; chip.innerHTML = '<i></i><span>已加载</span>'; }
+    if (chip) { chip.className = 'contentState ready'; chip.innerHTML = ''; }
     const timeEl = card.querySelector('.createdAt');
     if (timeEl) {
       const ms = getCreatedAt(chat);
@@ -1246,7 +1714,7 @@
     const messages = card.querySelector('.messages');
     messages.textContent = '';
     const max = 80;
-    for (const m of msgs.slice(0, max)) {
+    msgs.slice(0, max).forEach((m, msgIndex) => {
       const div = document.createElement('div');
       div.className = `msg ${m.role}`;
 
@@ -1262,11 +1730,26 @@
       }
 
       const body = document.createElement('div');
-      body.className = `msgBody ${m.text.length > 420 ? 'long' : ''}`;
-      body.textContent = m.text;
+      const text = String(m.text || '');
+      body.className = `msgBody md ${text.length > 520 ? 'long' : ''}`;
+      body.innerHTML = text ? markdownToHtml(text) : '<p style="opacity:.45">图片消息</p>';
       div.append(role, body);
 
-      if (m.text.length > 420) {
+      if (m.images?.length) {
+        const media = document.createElement('div');
+        media.className = 'mediaGrid';
+        m.images.forEach((img, imageIndex) => {
+          const tile = document.createElement('div');
+          tile.className = 'mediaTile';
+          tile.dataset.msgIndex = String(msgIndex);
+          tile.dataset.imageIndex = String(imageIndex);
+          tile.innerHTML = `<span class="imageSkeleton"></span><img alt="${escapeAttr(img.alt || '对话图片')}" loading="lazy">`;
+          media.appendChild(tile);
+        });
+        div.appendChild(media);
+      }
+
+      if (text.length > 520) {
         const toggle = document.createElement('button');
         toggle.className = 'msgToggle';
         toggle.dataset.act = 'toggleMsg';
@@ -1274,13 +1757,15 @@
         div.appendChild(toggle);
       }
       messages.appendChild(div);
-    }
+    });
     if (msgs.length > max) {
       const hint = document.createElement('div');
       hint.className = 'moreHint';
-      hint.textContent = `已显示前 ${max} 条文本消息 · 双击标题打开完整对话`;
+      hint.textContent = `已显示前 ${max} 条消息 · 可用右上角跳转按钮打开完整对话`;
       messages.appendChild(hint);
     }
+
+    if (card.classList.contains('expanded')) hydrateMediaForCard(id).catch(() => {});
   }
 
   let observer = null;
@@ -1321,48 +1806,80 @@
     surface.style.height = `${rect.height}px`;
   }
 
-  function rectToTransform(fromRect, layoutRect) {
-    const sx = Math.max(.0001, fromRect.width / layoutRect.width);
-    const sy = Math.max(.0001, fromRect.height / layoutRect.height);
-    const dx = fromRect.left - layoutRect.left;
-    const dy = fromRect.top - layoutRect.top;
+  function transformBetween(fromRect, toRect) {
+    const sx = Math.max(.0001, toRect.width / fromRect.width);
+    const sy = Math.max(.0001, toRect.height / fromRect.height);
+    const dx = toRect.left - fromRect.left;
+    const dy = toRect.top - fromRect.top;
     return `translate3d(${dx}px, ${dy}px, 0) scale(${sx}, ${sy})`;
   }
 
-  function cancelMorphAnimation() {
-    const anim = state.morphAnimation;
-    state.morphAnimation = null;
-    if (!anim) return;
-    try { anim.cancel(); } catch (_) {}
+  function clearAuxAnimations() {
+    for (const anim of state.morphAuxAnimations || []) { try { anim.cancel(); } catch (_) {} }
+    state.morphAuxAnimations = [];
   }
 
-  // Freeze the current *visual* pixels before reversing direction. This is important when
-  // a mouse-leave happens while the opening animation is still in flight.
-  function freezeSurfaceAtCurrentPixels(surface) {
-    const visualRect = surface.getBoundingClientRect();
-    cancelMorphAnimation();
-    surface.style.transition = 'none';
-    surface.style.transform = 'none';
-    setSurfaceRect(surface, visualRect);
-    void surface.offsetWidth;
+  function removeMorphProxy() {
+    if (state.morphProxy?.isConnected) state.morphProxy.remove();
+    state.morphProxy = null;
+  }
+
+  function cancelMorphAnimation(removeProxy = true) {
+    const anim = state.morphAnimation;
+    state.morphAnimation = null;
+    if (anim) { try { anim.cancel(); } catch (_) {} }
+    clearAuxAnimations();
+    if (removeProxy) removeMorphProxy();
+  }
+
+  function createMorphProxy(surface, rect, expanded = false) {
+    const proxy = surface.cloneNode(true);
+    proxy.classList.add('morphProxy');
+    if (expanded) proxy.classList.add('proxyExpanded');
+    proxy.removeAttribute('style');
+    const cs = getComputedStyle(surface);
+    proxy.style.background = cs.background;
+    proxy.style.border = cs.border;
+    proxy.style.borderRadius = cs.borderRadius;
+    proxy.style.boxShadow = cs.boxShadow;
+    proxy.style.color = cs.color;
+    proxy.style.opacity = '1';
+    setSurfaceRect(proxy, rect);
+    root.appendChild(proxy);
+    state.morphProxy = proxy;
+    return proxy;
+  }
+
+  function clearSurfaceGeometry(surface) {
+    if (!surface) return;
+    surface.style.removeProperty('left');
+    surface.style.removeProperty('top');
+    surface.style.removeProperty('width');
+    surface.style.removeProperty('height');
+    surface.style.removeProperty('transform');
+    surface.style.removeProperty('transform-origin');
     surface.style.removeProperty('transition');
-    return visualRect;
+    surface.style.removeProperty('opacity');
   }
 
   function clearMorphStyles(card) {
     if (!card) return;
+    cancelMorphAnimation(true);
     const surface = card.querySelector('.cardSurface');
-    cancelMorphAnimation();
     card.classList.remove('expanded', 'morphing', 'animating', 'collapsing');
-    if (surface) {
-      surface.style.removeProperty('left');
-      surface.style.removeProperty('top');
-      surface.style.removeProperty('width');
-      surface.style.removeProperty('height');
-      surface.style.removeProperty('transform');
-      surface.style.removeProperty('transform-origin');
-      surface.style.removeProperty('transition');
-    }
+    clearSurfaceGeometry(surface);
+  }
+
+  function targetRectForCard(startRect) {
+    const contentRect = content.getBoundingClientRect();
+    const gap = 12;
+    const targetWidth = Math.min(contentRect.width - 28, startRect.width * 3 + gap * 2);
+    const targetHeight = Math.min(contentRect.height - 24, startRect.height * 3 + gap * 2);
+    let left = startRect.left - (targetWidth - startRect.width) / 2;
+    let top = startRect.top - (targetHeight - startRect.height) / 2;
+    left = Math.max(contentRect.left + 10, Math.min(left, contentRect.right - targetWidth - 10));
+    top = Math.max(contentRect.top + 10, Math.min(top, contentRect.bottom - targetHeight - 10));
+    return { left, top, width:targetWidth, height:targetHeight };
   }
 
   function expandCard(card) {
@@ -1371,69 +1888,61 @@
     const id = card.dataset.id;
     if (state.expandedId === id && card.classList.contains('expanded') && !card.classList.contains('collapsing')) return;
     if (state.expandedId && state.expandedId !== id) collapseExpanded(true);
-
     const surface = card.querySelector('.cardSurface');
     if (!surface) return;
 
-    // Measure the untouched card first. No fixed-position class exists at this point.
     const startRect = surface.getBoundingClientRect();
-    const contentRect = content.getBoundingClientRect();
-    const gap = 12;
-    const targetWidth = Math.min(contentRect.width - 28, startRect.width * 3 + gap * 2);
-    const targetHeight = Math.min(contentRect.height - 24, startRect.height * 3 + gap * 2);
+    const targetRect = targetRectForCard(startRect);
+    cancelMorphAnimation(true);
+    // Snapshot the compact card before applying expanded layout. Only the proxy scales;
+    // the real text is never scaled, which removes the end-of-animation tiny-text frame.
+    const proxy = createMorphProxy(surface, startRect);
 
-    let left = startRect.left - (targetWidth - startRect.width) / 2;
-    let top = startRect.top - (targetHeight - startRect.height) / 2;
-    left = Math.max(contentRect.left + 10, Math.min(left, contentRect.right - targetWidth - 10));
-    top = Math.max(contentRect.top + 10, Math.min(top, contentRect.bottom - targetHeight - 10));
-    const targetRect = { left, top, width: targetWidth, height: targetHeight };
-
-    cancelMorphAnimation();
     card.classList.remove('collapsing');
-    card.classList.add('morphing', 'expanded', 'animating');
+    card.classList.add('expanded', 'morphing', 'animating');
     panel.classList.add('hasExpanded');
     state.expandedId = id;
-
-    // Canonical FLIP: lay the real surface out at its FINAL rect with transitions disabled,
-    // then visually invert it back onto the exact hovered card using only transform.
-    // This avoids the old auto/0,0 -> startRect transition that looked like a top-left fly-in.
     surface.style.transition = 'none';
     surface.style.transformOrigin = '0 0';
     setSurfaceRect(surface, targetRect);
-    const inverted = rectToTransform(startRect, targetRect);
-    surface.style.transform = inverted;
+    surface.style.opacity = '0';
     void surface.offsetWidth;
     surface.style.removeProperty('transition');
 
     const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (reduced || typeof surface.animate !== 'function') {
-      surface.style.transform = 'none';
-      card.classList.remove('animating');
+    if (reduced || typeof proxy.animate !== 'function') {
+      removeMorphProxy();
+      surface.style.removeProperty('opacity');
+      card.classList.remove('morphing', 'animating');
     } else {
-      const anim = surface.animate(
-        [
-          { transform: inverted },
-          { transform: 'translate3d(0,0,0) scale(1,1)' }
-        ],
-        {
-          duration: 380,
-          easing: 'cubic-bezier(.16,1,.3,1)',
-          fill: 'both'
-        }
-      );
-      state.morphAnimation = anim;
-      anim.finished.then(() => {
-        if (state.morphAnimation !== anim) return;
+      const move = proxy.animate([
+        { transform:'translate3d(0,0,0) scale(1,1)', opacity:1 },
+        { transform:transformBetween(startRect, targetRect), opacity:1, offset:.70 },
+        { transform:transformBetween(startRect, targetRect), opacity:0, offset:1 },
+      ], { duration:300, easing:'cubic-bezier(.16,1,.3,1)', fill:'both' });
+      const reveal = surface.animate([
+        { opacity:0, offset:0 }, { opacity:0, offset:.58 }, { opacity:1, offset:1 }
+      ], { duration:300, easing:'ease-out', fill:'both' });
+      state.morphAnimation = move;
+      state.morphAuxAnimations = [reveal];
+      Promise.allSettled([move.finished, reveal.finished]).then(() => {
+        if (state.morphAnimation !== move) return;
         state.morphAnimation = null;
-        surface.style.transform = 'none';
-        try { anim.cancel(); } catch (_) {}
+        clearAuxAnimations();
+        removeMorphProxy();
+        surface.style.removeProperty('opacity');
         if (card.isConnected && state.expandedId === id && !card.classList.contains('collapsing')) {
-          card.classList.remove('animating');
+          card.classList.remove('morphing', 'animating');
+          if (state.details.has(id)) hydrateMediaForCard(id).catch(() => {});
         }
-      }).catch(() => {});
+      });
     }
 
     if (!state.details.has(id)) setExpandedLoading(card, state.loadingIds.has(id));
+    else {
+      if (needsMediaRefresh(state.details.get(id))) refreshDetailForMedia(id).then(() => hydrateMediaForCard(id)).catch(() => {});
+      else hydrateMediaForCard(id).catch(() => {});
+    }
     enqueueDetail(id, 'hover');
   }
 
@@ -1441,67 +1950,68 @@
     clearTimeout(state.hoverTimer);
     clearTimeout(state.collapseTimer);
     const id = state.expandedId;
-    if (!id) {
-      panel.classList.remove('hasExpanded');
-      return;
-    }
+    if (!id) { panel.classList.remove('hasExpanded'); return; }
     const card = grid.querySelector(`.card[data-id="${CSS.escape(id)}"]`);
     const surface = card?.querySelector('.cardSurface');
 
     const finish = () => {
-      clearMorphStyles(card);
+      if (card) {
+        card.classList.remove('expanded', 'morphing', 'animating', 'collapsing');
+        clearSurfaceGeometry(surface);
+      }
+      cancelMorphAnimation(true);
       cancelQueuedPriority(id);
       if (state.expandedId === id) state.expandedId = null;
       panel.classList.remove('hasExpanded');
     };
 
-    if (immediate || !card || !surface) {
-      finish();
-      return;
-    }
+    if (immediate || !card || !surface) { finish(); return; }
 
     state.collapseTimer = setTimeout(() => {
       if (!card.isConnected || state.expandedId !== id) return;
-
-      // Read the placeholder while it is still untouched in the grid.
       const homeRect = card.getBoundingClientRect();
-      // Capture the exact current pixels (even midway through opening), then animate only transform.
-      const currentRect = freezeSurfaceAtCurrentPixels(surface);
-      card.classList.remove('animating');
-      card.classList.add('collapsing');
-
-      const endTransform = rectToTransform(homeRect, currentRect);
       const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
-      if (reduced || typeof surface.animate !== 'function') {
-        finish();
-        return;
+
+      // If opening is still in flight, reuse its proxy at the exact current visual rect.
+      let proxy = state.morphProxy;
+      let currentRect;
+      if (proxy?.isConnected) {
+        currentRect = proxy.getBoundingClientRect();
+        cancelMorphAnimation(false);
+        proxy.style.transform = 'none';
+        proxy.style.opacity = '1';
+        setSurfaceRect(proxy, currentRect);
+      } else {
+        currentRect = surface.getBoundingClientRect();
+        cancelMorphAnimation(true);
+        proxy = createMorphProxy(surface, currentRect, true);
       }
 
-      const anim = surface.animate(
-        [
-          { transform: 'translate3d(0,0,0) scale(1,1)' },
-          { transform: endTransform }
-        ],
-        {
-          duration: 280,
-          easing: 'cubic-bezier(.22,.61,.36,1)',
-          fill: 'both'
-        }
-      );
-      state.morphAnimation = anim;
-      anim.finished.then(() => {
-        if (state.morphAnimation !== anim) return;
-        state.morphAnimation = null;
-        // The placeholder and transformed surface are now pixel-aligned; restoring absolute
-        // positioning happens after the animation, so there is no layout-transition stutter.
-        try { anim.cancel(); } catch (_) {}
-        finish();
-      }).catch(() => {});
+      // Restore the actual card to its compact native layout immediately, but keep it transparent
+      // until the proxy reaches home. This prevents scaled text from flashing at the end.
+      card.classList.remove('expanded', 'morphing', 'animating');
+      card.classList.add('collapsing');
+      clearSurfaceGeometry(surface);
+      surface.style.opacity = '0';
+      void surface.offsetWidth;
 
-      // Safety cleanup if transition events/WAAPI completion are interrupted by the page.
-      setTimeout(() => {
-        if (state.expandedId === id && card.classList.contains('collapsing')) finish();
-      }, 420);
+      if (reduced || typeof proxy.animate !== 'function') { finish(); return; }
+      const toHome = transformBetween(currentRect, homeRect);
+      const move = proxy.animate([
+        { transform:'translate3d(0,0,0) scale(1,1)', opacity:1 },
+        { transform:toHome, opacity:.94, offset:.62 },
+        { transform:toHome, opacity:0, offset:1 },
+      ], { duration:230, easing:'cubic-bezier(.22,.61,.36,1)', fill:'both' });
+      const revealHome = surface.animate([
+        { opacity:0, offset:0 }, { opacity:0, offset:.62 }, { opacity:1, offset:1 }
+      ], { duration:230, easing:'ease-out', fill:'both' });
+      state.morphAnimation = move;
+      state.morphAuxAnimations = [revealHome];
+      Promise.allSettled([move.finished, revealHome.finished]).then(() => {
+        if (state.morphAnimation !== move) return;
+        finish();
+      });
+      setTimeout(() => { if (state.expandedId === id && card.classList.contains('collapsing')) finish(); }, 360);
     }, HOVER_COLLAPSE_DELAY_MS);
   }
 
@@ -1564,8 +2074,13 @@
     if (act === 'close') { collapseExpanded(true); state.opened = false; overlay.classList.remove('open'); return; }
     if (act === 'loadMore') { loadNextBatch(); return; }
     if (act === 'toggleCountMenu') { if (!countToggle.disabled) setCountMenu(!state.countMenuOpen); return; }
+    if (act === 'toggleSpeedMenu') { setSpeedMenu(!state.speedMenuOpen); return; }
+    if (act === 'cancelFast') { closeFastWarning(false); return; }
+    if (act === 'confirmFast') { closeFastWarning(true); return; }
     const countOption = e.target.closest('.countOption');
-    if (countOption?.dataset.count) { setCountChoice(countOption.dataset.count); setCountMenu(false); return; }
+    if (countOption?.dataset.count) { setCountChoice(countOption.dataset.count); return; }
+    const speedChoice = e.target.closest('.speedChoice');
+    if (speedChoice?.dataset.speed) { requestSpeedChoice(speedChoice.dataset.speed); return; }
     if (act === 'loadCount') { loadCountDetails(); return; }
     if (act === 'selectVisible') {
       const list = filteredChats();
@@ -1575,6 +2090,8 @@
     }
     if (act === 'archive') { batchAction('archive', [...state.selected]); return; }
     if (act === 'delete') { batchAction('delete', [...state.selected]); return; }
+    const mediaTile = e.target.closest('.mediaTile[data-url]');
+    if (mediaTile?.dataset.url) { window.open(mediaTile.dataset.url, '_blank', 'noopener'); return; }
     if (act === 'toggleMsg') {
       const body = e.target.closest('.msg')?.querySelector('.msgBody');
       if (!body) return;
@@ -1590,6 +2107,15 @@
       e.target.checked ? state.selected.add(id) : state.selected.delete(id);
       card.classList.toggle('selected', e.target.checked);
       updateStats();
+      return;
+    }
+    if (act === 'openConversation') {
+      clearTimeout(state.hoverTimer);
+      const w = Math.min(1180, Math.max(900, Math.round(screen.availWidth * .72)));
+      const h = Math.min(900, Math.max(700, Math.round(screen.availHeight * .82)));
+      const left = Math.max(0, Math.round((screen.availWidth - w) / 2));
+      const top = Math.max(0, Math.round((screen.availHeight - h) / 2));
+      window.open(`/c/${encodeURIComponent(id)}`, `chatdeck-${id}`, `popup=yes,width=${w},height=${h},left=${left},top=${top},resizable=yes,scrollbars=yes`);
       return;
     }
     if (act === 'singleDelete') { batchAction('delete', [id]); return; }
@@ -1619,6 +2145,7 @@
   });
 
   setCountChoice(state.loadCountChoice);
+  applySpeedChoice(LOAD_SPEEDS[state.loadSpeedChoice] ? state.loadSpeedChoice : 'slow');
 
   root.addEventListener('pointerdown', (e) => {
     if (state.countMenuOpen && !e.target.closest('.loadCombo')) setCountMenu(false);
@@ -1658,7 +2185,9 @@
       if (state.opened && !state.chats.length) loadNextBatch();
     }
     if (e.key === 'Escape' && state.opened) {
-      if (state.countMenuOpen) setCountMenu(false);
+      if (state.fastWarningOpen) closeFastWarning(false);
+      else if (state.speedMenuOpen) setSpeedMenu(false);
+      else if (state.countMenuOpen) setCountMenu(false);
       else if (state.expandedId) collapseExpanded(true);
       else { state.opened = false; overlay.classList.remove('open'); }
     }

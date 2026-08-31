@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ChatGPT Card Manager",
-  "version": "0.9.0",
-  "description": "Card-based ChatGPT conversation manager with faster card morphs, loaded-edge styling, placeholder-only unloaded cards, local cache and rate-limit protection.",
+  "version": "1.0.0",
+  "description": "Card-based ChatGPT conversation manager with smooth proxy morphing, Markdown rendering, image thumbnails, styled controls, configurable load speeds, local cache and rate-limit protection.",
   "content_scripts": [
     {
       "matches": [
