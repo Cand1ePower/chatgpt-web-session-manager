@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.16.0
+- 定位到 v1.11 之后卡片收缩错位的真正根因：主面板为了右下角缩放动画长期保留了 `transform / will-change: transform`，Chromium 会因此把 `.panel` 变成 `position: fixed` 子元素的新 containing block。
+- 卡片 FLIP 使用 `getBoundingClientRect()` 得到的是视口坐标，而 fixed `.cardSurface` 的 `left / top` 却被解释成面板坐标，导致展开/收缩终点持续偏移；已通过独立 Chromium 测试验证该行为。
+- 主面板静止时彻底移除 `transform` 与 `will-change`，只在面板自身 360ms / 270ms 开关动画期间临时启用合成层，动画结束立即清理。
+- 卡片收缩恢复 v1.10 的 compositor-only FLIP：只动画 `transform`，不再逐帧动画 `left / top / width / height`，显著降低布局与重绘开销。
+- 收缩时仍立即淡出完整正文，终点使用折叠卡片的真实可视矩形；选中卡片继续考虑 2% 缩放。
+
 ## v1.15.0
 - 彻底移除卡片收缩阶段的 transform / matrix 缩放方案，改为直接动画 fixed 卡片的 `left / top / width / height` 真实像素几何。
 - 收缩过程中字体不再随卡片整体缩成微型文字；正文区域先隐藏，标题保持原生字号并随容器自然裁切 / 重排。

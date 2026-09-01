@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ChatGPT Card Manager",
-  "version": "1.15.0",
-  "description": "Card-based ChatGPT conversation manager with direct-geometry collapse animation, local cache, Markdown/media preview, anchored delete confirmation, idle-safe background hydration, launcher-driven panel zoom, and powder-dissolve deletion feedback.",
+  "version": "1.16.0",
+  "description": "Card-based ChatGPT conversation manager with viewport-correct compositor FLIP collapse animation, local cache, Markdown/media preview, anchored delete confirmation, idle-safe background hydration, launcher-driven panel zoom, and powder-dissolve deletion feedback.",
   "content_scripts": [
     {
       "matches": [

@@ -1,6 +1,6 @@
 # ChatGPT Card Manager
 
-当前版本：**v1.15.0**
+当前版本：**v1.16.0**
 
 一个直接运行在 `chatgpt.com` 页面中的 Chrome / Edge Manifest V3 扩展，用卡片方式批量浏览、预览、搜索、选择、归档和删除 ChatGPT 历史对话。
 
@@ -20,6 +20,14 @@
 - 选中卡片显示持续顺时针流动的彩虹边缘。
 - 选中后的折叠卡片会平滑缩小 2%，Grid 布局尺寸保持不变。
 - 长列表性能优化：折叠卡片轻量 DOM、展开正文按需渲染、`content-visibility`、搜索防抖。
+
+
+## v1.16：修复 v1.11 引入的 fixed containing block 回归
+
+- 真正的错位原因不是 FLIP 终点公式，而是 v1.11 为主面板开关动画新增的长期 `transform / will-change: transform`。Chromium 会把这类元素当成 fixed 后代的 containing block。
+- `.cardSurface` 的坐标来自 `getBoundingClientRect()`（视口坐标），但 `position: fixed` 的 `left / top` 在该状态下会相对 `.panel` 解析。面板本身有 `16px` inset，因此即使矩阵完全正确，视觉终点也会持续偏移。
+- v1.16 让 `.panel` 在静止时完全没有 transform/will-change；只有点击右下角图标展开或收起面板的短暂动画期间才临时启用，结束后马上清理。
+- 卡片收缩因此可以恢复 v1.10 已验证的 GPU FLIP 路径，只动画 transform，不再每帧修改 left/top/width/height，收缩流畅度也会恢复。
 
 
 ## v1.15：重写卡片收缩几何动画

@@ -1,13 +1,13 @@
 # Version History
 
-This repository was reconstructed from the archived release snapshots created during the ChatGPT Card Manager development session. Each release snapshot is committed in chronological order and tagged with its semantic version, from `v0.1.0` through `v1.15.0`.
+This repository was reconstructed from the archived release snapshots created during the ChatGPT Card Manager development session. Each release snapshot is committed in chronological order and tagged with its semantic version, from `v0.1.0` through `v1.16.0`.
 
 Use:
 
 ```bash
 git log --oneline --decorate --reverse
 git checkout v1.0.0
-git diff v1.14.0..v1.15.0
+git diff v1.15.0..v1.16.0
 ```
 
 The extension's functional release history is also summarized in `CHANGELOG.md` on the latest branch.

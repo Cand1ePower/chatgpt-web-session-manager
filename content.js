@@ -121,7 +121,10 @@
         box-shadow: 0 30px 90px rgba(0,0,0,.30);
         display:grid; grid-template-rows:auto auto 1fr auto;
         font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        transform:translate3d(0,0,0) scale(1); transform-origin:100% 100%; will-change:transform, opacity;
+        /* Keep the resting panel free of transform/will-change. Either one can establish a
+           containing block for fixed descendants and shift card FLIP coordinates. The panel
+           is promoted only for the few hundred ms of its own launcher animation. */
+        transform-origin:100% 100%;
       }
       @media (prefers-color-scheme: dark) {
         .panel { background: color-mix(in srgb, #171719 95%, transparent); color:#f3f3f4; border-color:rgba(255,255,255,.10); }
@@ -592,11 +595,11 @@
       }
       .card.expanded:not(.animating):not(.collapsing) .cardSurface { will-change:auto; }
 
-      /* v1.15 collapse strategy:
-         Collapse no longer scales the expanded surface. Scaling was the source of the
-         tiny-text/blank-card intermediate frame and made the apparent endpoint hard to
-         read. The fixed surface now animates its real pixel geometry (left/top/width/height)
-         directly back to the grid slot, while typography keeps its native scale. */
+      /* v1.16: card morphs are compositor-only again. The v1.11 panel zoom accidentally
+         left will-change:transform on .panel at rest, which made every fixed cardSurface
+         use the panel as its containing block. That was the real source of the apparent
+         collapse offset. With the panel no longer a transformed containing block, the
+         original GPU FLIP path is both exact and substantially smoother. */
       .card.collapsing .cardHead { pointer-events:none; }
       .card.compactRevealing .preview,
       .card.compactRevealing .loadingPreview,
@@ -1112,6 +1115,7 @@
       updateRateBanner();
       const origin = panelLauncherOrigin();
       panel.style.transformOrigin = `${origin.x}px ${origin.y}px`;
+      panel.style.willChange = 'transform, opacity';
       if (!reduced && typeof panel.animate === 'function') {
         const panelAnim = panel.animate([
           { transform:`translate3d(0,0,0) scale(${origin.scale})`, opacity:.12 },
@@ -1121,8 +1125,9 @@
         await Promise.allSettled([panelAnim.finished, veilAnim.finished]);
         try { panelAnim.cancel(); veilAnim.cancel(); } catch (_) {}
       }
-      panel.style.transform = 'none';
+      panel.style.removeProperty('transform');
       panel.style.opacity = '1';
+      panel.style.removeProperty('will-change');
       state.panelAnimating = false;
       if (!state.chats.length) loadNextBatch();
       scheduleIdlePrefetch();
@@ -1136,6 +1141,7 @@
     setSpeedMenu(false);
     const origin = panelLauncherOrigin();
     panel.style.transformOrigin = `${origin.x}px ${origin.y}px`;
+    panel.style.willChange = 'transform, opacity';
     if (!reduced && typeof panel.animate === 'function') {
       const panelAnim = panel.animate([
         { transform:'translate3d(0,0,0) scale(1)', opacity:1 },
@@ -1147,8 +1153,9 @@
     }
     state.opened = false;
     overlay.classList.remove('open');
-    panel.style.transform = 'none';
+    panel.style.removeProperty('transform');
     panel.style.opacity = '1';
+    panel.style.removeProperty('will-change');
     state.panelAnimating = false;
   }
 
@@ -2589,148 +2596,73 @@
       if (!card.isConnected || state.expandedId !== id) return;
 
       /*
-       * v1.15 deliberately abandons transform-scaling for collapse. Even with a correct
-       * affine matrix, shrinking the whole expanded DOM makes its typography collapse to
-       * miniature pixels and can expose a visually misleading intermediate rectangle.
-       * Instead, keep the real surface fixed and animate its explicit viewport geometry.
-       * That gives us an unambiguous endpoint: the grid slot's exact left/top/width/height.
+       * v1.16 root fix: v1.11 introduced a permanent `will-change: transform` on .panel
+       * to smooth the launcher zoom. In Chromium that establishes a containing block for
+       * position:fixed descendants even while the panel visually sits at scale(1). Our
+       * cardSurface coordinates are measured with getBoundingClientRect() (viewport space),
+       * so fixed left/top were then interpreted in panel space. Every later attempt was
+       * correcting the symptom at the end of collapse rather than the coordinate space.
+       *
+       * The resting panel is now transform/will-change free, so restore the proven
+       * compositor-only FLIP from v1.10. No left/top/width/height animation = no per-frame
+       * layout, and the endpoint is the card's actual visual box.
        */
+      const homeRect = compactVisualRect(card);
       const currentRect = freezeSurfaceAtCurrentPixels(surface);
-      const initialHome = compactVisualRect(card);
-      card.classList.remove('animating');
+      card.classList.remove('animating', 'compactRevealing');
       card.classList.add('collapsing');
-      surface.style.transform = 'none';
-      surface.style.transformOrigin = '0 0';
-      surface.style.transition = 'none';
-      setSurfaceRect(surface, currentRect);
-      void surface.offsetWidth;
 
+      const endTransform = rectToTransform(homeRect, currentRect);
       const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
       if (reduced || typeof surface.animate !== 'function') {
-        setSurfaceRect(surface, compactVisualRect(card));
         finish();
         return;
       }
 
-      const px = n => `${Number(n).toFixed(3)}px`;
-      const geometryFrames = (fromRect, toRect) => ([
+      // The detailed reading body fades out immediately; the geometry itself stays on the
+      // compositor. This avoids the v1.15 main-thread layout jank while keeping the card shell
+      // visibly connected to its source card.
+      const anim = surface.animate(
+        [
+          { transform: IDENTITY_MORPH },
+          { transform: endTransform }
+        ],
         {
-          left:px(fromRect.left), top:px(fromRect.top),
-          width:px(fromRect.width), height:px(fromRect.height),
-          borderRadius:'22px'
-        },
-        {
-          left:px(toRect.left), top:px(toRect.top),
-          width:px(toRect.width), height:px(toRect.height),
-          borderRadius:'17px'
+          duration: 245,
+          easing: 'cubic-bezier(.22,.61,.36,1)',
+          fill: 'both'
         }
-      ]);
+      );
+      state.morphAnimation = anim;
 
-      const runGeometry = (fromRect, toRect, duration = 270) => {
-        const anim = surface.animate(
-          geometryFrames(fromRect, toRect),
-          {
-            duration,
-            easing:'cubic-bezier(.22,.72,.22,1)',
-            fill:'both'
-          }
-        );
-        state.morphAnimation = anim;
-        return anim;
-      };
-
-      let geometryAnim = runGeometry(currentRect, initialHome, 270);
-
-      const completeHandoff = () => {
-        if (!card.isConnected || state.expandedId !== id) return;
-
-        // Re-measure at the last possible moment. If scroll anchoring, a newly appended
-        // list page, or browser rounding moved the slot during the 270 ms animation,
-        // correct those final pixels before switching fixed -> grid positioning.
-        const latestHome = compactVisualRect(card);
-        const visual = surface.getBoundingClientRect();
-        const delta = Math.max(
-          Math.abs(visual.left - latestHome.left),
-          Math.abs(visual.top - latestHome.top),
-          Math.abs(visual.width - latestHome.width),
-          Math.abs(visual.height - latestHome.height)
-        );
-
-        const handoff = () => {
-          // Pin the fixed element to the *latest* destination before releasing the WAAPI
-          // layer. There is never a frame where the animation disappears while the card
-          // is still sitting at its old expanded geometry.
-          setSurfaceRect(surface, latestHome);
-          surface.style.transform = 'none';
-          surface.style.borderRadius = '17px';
-          void surface.offsetWidth;
-          try { geometryAnim.cancel(); } catch (_) {}
-          state.morphAnimation = null;
-
-          const previewTargets = [
-            card.querySelector('.preview'),
-            card.querySelector('.loadingPreview'),
-            card.querySelector('.waitingPreview'),
-            card.querySelector('.compactMedia')
-          ].filter(Boolean);
-          card.classList.add('compactRevealing');
-          previewTargets.forEach(el => { el.style.opacity = '0'; });
-
-          // Same task: remove fixed geometry only after its last rendered box is exactly
-          // on the grid slot. The compact card takes over at identical pixels.
-          card.classList.remove('expanded', 'morphing', 'animating', 'collapsing');
-          surface.style.removeProperty('left');
-          surface.style.removeProperty('top');
-          surface.style.removeProperty('width');
-          surface.style.removeProperty('height');
-          surface.style.removeProperty('transform');
-          surface.style.removeProperty('transform-origin');
-          surface.style.removeProperty('border-radius');
-          clearExpandedDetail(card);
-          void surface.offsetWidth;
-          surface.style.removeProperty('transition');
-
-          cancelQueuedPriority(id);
-          if (state.expandedId === id) state.expandedId = null;
-          panel.classList.remove('hasExpanded');
-
-          requestAnimationFrame(() => {
-            card.classList.remove('compactRevealing');
-            previewTargets
-              .filter(el => el.isConnected && getComputedStyle(el).display !== 'none')
-              .forEach(el => {
-                const anim = el.animate(
-                  [{ opacity:0 }, { opacity:1 }],
-                  { duration:90, easing:'cubic-bezier(0,0,.2,1)', fill:'none' }
-                );
-                anim.finished.finally(() => el.style.removeProperty('opacity')).catch(() => {});
-              });
-          });
-        };
-
-        if (delta <= 0.75) {
-          handoff();
-          return;
-        }
-
-        // A tiny endpoint correction is preferable to a one-frame snap. This path is
-        // uncommon, but makes the collapse robust when the list moves while it is closing.
-        try { geometryAnim.cancel(); } catch (_) {}
+      anim.finished.then(() => {
+        if (state.morphAnimation !== anim) return;
         state.morphAnimation = null;
-        setSurfaceRect(surface, visual);
-        void surface.offsetWidth;
-        geometryAnim = runGeometry(visual, latestHome, Math.min(90, Math.max(55, delta * 1.4)));
-        geometryAnim.finished.then(handoff).catch(() => {});
-      };
 
-      geometryAnim.finished.then(() => {
-        if (state.morphAnimation !== geometryAnim) return;
-        completeHandoff();
+        // Commit the exact last compositor frame first. Then restore the ordinary absolute
+        // card in the same turn. With the fixed containing-block regression removed these two
+        // rectangles are pixel-identical, so there is no intermediate floating mini-card.
+        try { anim.commitStyles?.(); } catch (_) {}
+        try { anim.cancel(); } catch (_) {}
+        surface.style.transition = 'none';
+        card.classList.remove('expanded', 'morphing', 'animating', 'collapsing', 'compactRevealing');
+        surface.style.removeProperty('left');
+        surface.style.removeProperty('top');
+        surface.style.removeProperty('width');
+        surface.style.removeProperty('height');
+        surface.style.removeProperty('transform');
+        surface.style.removeProperty('transform-origin');
+        clearExpandedDetail(card);
+        void surface.offsetWidth;
+        surface.style.removeProperty('transition');
+        cancelQueuedPriority(id);
+        if (state.expandedId === id) state.expandedId = null;
+        panel.classList.remove('hasExpanded');
       }).catch(() => {});
 
       setTimeout(() => {
         if (state.expandedId === id && card.classList.contains('collapsing')) finish();
-      }, 560);
+      }, 390);
     }, HOVER_COLLAPSE_DELAY_MS);
   }
 
