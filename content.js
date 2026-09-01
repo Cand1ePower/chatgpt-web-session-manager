@@ -2379,12 +2379,20 @@
     surface.style.height = `${rect.height}px`;
   }
 
+  const IDENTITY_MORPH = 'matrix3d(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1)';
+
   function rectToTransform(fromRect, layoutRect) {
     const sx = Math.max(.0001, fromRect.width / layoutRect.width);
     const sy = Math.max(.0001, fromRect.height / layoutRect.height);
     const dx = fromRect.left - layoutRect.left;
     const dy = fromRect.top - layoutRect.top;
-    return `translate3d(${dx}px, ${dy}px, 0) scale(${sx}, ${sy})`;
+
+    // Use one explicit affine matrix instead of `translate(...) scale(...)`.
+    // CSS transform functions compose in a coordinate system where a later scale can
+    // also scale the earlier translation vector. During collapse that made the card
+    // stop roughly one row above its real grid slot before the fixed -> absolute swap.
+    // matrix3d() encodes the exact mapping we need: x' = sx*x + dx, y' = sy*y + dy.
+    return `matrix3d(${sx},0,0,0,0,${sy},0,0,0,0,1,0,${dx},${dy},0,1)`;
   }
 
   function targetRectForCard(startRect) {
@@ -2439,7 +2447,7 @@
   function settleOpenAnimation(surface, anim) {
     // Keep the final scale(1) visually stable while releasing WAAPI's fill layer.
     // Writing the final transform before cancel prevents the old one-frame compressed-text flash.
-    surface.style.transform = 'translate3d(0,0,0) scale(1,1)';
+    surface.style.transform = IDENTITY_MORPH;
     void surface.offsetWidth;
     try { anim.cancel(); } catch (_) {}
     surface.style.transform = 'none';
@@ -2485,7 +2493,7 @@
       const anim = surface.animate(
         [
           { transform: inverted },
-          { transform: 'translate3d(0,0,0) scale(1,1)' }
+          { transform: IDENTITY_MORPH }
         ],
         {
           duration: 340,
@@ -2566,7 +2574,7 @@
 
       const anim = surface.animate(
         [
-          { transform: 'translate3d(0,0,0) scale(1,1)' },
+          { transform: IDENTITY_MORPH },
           { transform: endTransform }
         ],
         {

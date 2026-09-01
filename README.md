@@ -74,3 +74,8 @@ v1.8 改为：
 ## 注意
 
 本扩展依赖 ChatGPT 网页当前使用的内部会话接口，而不是公开稳定的 OpenAI API。网页接口、鉴权方式或限流策略改变后，扩展可能需要同步调整。
+
+
+## v1.12.0 animation fix
+
+Card FLIP transforms now use an explicit `matrix3d` affine mapping. This fixes the collapse end-point drift where translation was effectively scaled during the shrink, causing the fixed card to stop at an intermediate position before snapping back into the grid.
