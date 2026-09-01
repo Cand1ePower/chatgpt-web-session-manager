@@ -59,6 +59,8 @@
     hoverTimer: null,
     collapseTimer: null,
     morphAnimation: null,
+    morphAuxAnimations: [],
+    collapseGhost: null,
     lastManualRequestAt: 0,
     manualLoading: false,
     manualPendingIds: new Set(),
@@ -590,6 +592,22 @@
         will-change:transform; contain:paint;
       }
       .card.expanded:not(.animating):not(.collapsing) .cardSurface { will-change:auto; }
+
+      /* Collapse hand-off layer: a real compact-card clone sits exactly in the grid slot.
+         The large fixed surface morphs onto it, then cross-fades during the final ~90 ms.
+         This prevents the expanded layout/text from being visibly miniaturized before the
+         compact preview returns. */
+      .card.collapseGhostCard {
+        position:fixed !important; min-height:170px !important; height:170px !important;
+        overflow:visible !important; pointer-events:none !important; z-index:59 !important;
+        content-visibility:visible !important; contain:none !important; opacity:0;
+      }
+      .card.collapseGhostCard .cardSurface {
+        position:absolute !important; inset:0 !important; width:auto !important; height:170px !important;
+        will-change:opacity; pointer-events:none !important;
+      }
+      .card.collapseGhostCard .expandedBody { display:none !important; }
+      .card.collapseGhostCard button, .card.collapseGhostCard input, .card.collapseGhostCard a { pointer-events:none !important; }
 
       .msg { white-space:normal; }
       .msgBody { line-height:1.58; }
@@ -2407,11 +2425,50 @@
     return { left, top, width:targetWidth, height:targetHeight };
   }
 
+  function clearCollapseGhost() {
+    const ghost = state.collapseGhost;
+    state.collapseGhost = null;
+    if (ghost?.isConnected) ghost.remove();
+  }
+
+  function cancelMorphAuxAnimations() {
+    const aux = Array.isArray(state.morphAuxAnimations) ? state.morphAuxAnimations.splice(0) : [];
+    aux.forEach(anim => { try { anim.cancel(); } catch (_) {} });
+    clearCollapseGhost();
+  }
+
   function cancelMorphAnimation() {
     const anim = state.morphAnimation;
     state.morphAnimation = null;
-    if (!anim) return;
-    try { anim.cancel(); } catch (_) {}
+    if (anim) { try { anim.cancel(); } catch (_) {} }
+    cancelMorphAuxAnimations();
+  }
+
+  function createCollapseGhost(card, homeRect) {
+    clearCollapseGhost();
+    if (!card?.isConnected) return null;
+    const ghost = card.cloneNode(true);
+    ghost.classList.remove('expanded', 'morphing', 'animating', 'collapsing', 'contentLoading');
+    ghost.classList.add('collapseGhostCard');
+    ghost.removeAttribute('data-id');
+    ghost.setAttribute('aria-hidden', 'true');
+    ghost.querySelector('.expandedBody')?.remove();
+    ghost.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
+    ghost.querySelectorAll('button, input, a').forEach(el => {
+      el.tabIndex = -1;
+      if ('disabled' in el) el.disabled = true;
+    });
+    const gs = ghost.querySelector('.cardSurface');
+    if (gs) {
+      ['left','top','width','height','transform','transform-origin','transition','opacity','visibility'].forEach(prop => gs.style.removeProperty(prop));
+    }
+    ghost.style.left = `${homeRect.left}px`;
+    ghost.style.top = `${homeRect.top}px`;
+    ghost.style.width = `${homeRect.width}px`;
+    ghost.style.height = `${homeRect.height}px`;
+    panel.appendChild(ghost);
+    state.collapseGhost = ghost;
+    return ghost;
   }
 
   // Freeze the exact visible pixels before reversing an opening animation midway.
@@ -2558,13 +2615,24 @@
     state.collapseTimer = setTimeout(() => {
       if (!card.isConnected || state.expandedId !== id) return;
 
-      // The grid card remains a 170px placeholder, so this is always its real home rectangle.
+      /*
+       * The geometry in v1.12 was already reaching the correct slot. The visible "wrong endpoint"
+       * came from a different source: the fixed 3x expanded layout itself was being scaled down to
+       * 1x. Near the end, its title/body therefore became tiny and mostly blank; only after removing
+       * `.expanded` did the compact preview suddenly reappear. That looks like a misplaced mini-card
+       * followed by a refresh even when the outer rectangle is mathematically correct.
+       *
+       * v1.13 keeps the same exact FLIP geometry, but creates a compact-card hand-off clone at the
+       * destination slot. During the final ~100 ms the moving expanded surface fades out while the
+       * native-size compact clone fades in. We then restore the real card underneath the clone in one
+       * frame and remove the clone on the next frame. No miniaturized expanded typography is exposed.
+       */
       const homeRect = card.getBoundingClientRect();
-      // If opening is still running, freeze exactly where it currently is and reverse from there.
       const currentRect = freezeSurfaceAtCurrentPixels(surface);
       card.classList.remove('animating');
       card.classList.add('collapsing');
 
+      const ghost = createCollapseGhost(card, homeRect);
       const endTransform = rectToTransform(homeRect, currentRect);
       const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
       if (reduced || typeof surface.animate !== 'function') {
@@ -2572,7 +2640,7 @@
         return;
       }
 
-      const anim = surface.animate(
+      const transformAnim = surface.animate(
         [
           { transform: IDENTITY_MORPH },
           { transform: endTransform }
@@ -2583,16 +2651,32 @@
           fill: 'both'
         }
       );
-      state.morphAnimation = anim;
-      anim.finished.then(() => {
-        if (state.morphAnimation !== anim) return;
+      state.morphAnimation = transformAnim;
+
+      // Cross-fade only in the final part of the geometric collapse. This hides the expanded
+      // typography before it becomes visibly tiny while preserving the shrinking card shell.
+      const surfaceFade = surface.animate(
+        [{ opacity:1 }, { opacity:0 }],
+        { duration:92, delay:158, easing:'cubic-bezier(.4,0,1,1)', fill:'both' }
+      );
+      const ghostFade = ghost?.animate(
+        [{ opacity:0 }, { opacity:1 }],
+        { duration:104, delay:146, easing:'cubic-bezier(0,0,.2,1)', fill:'both' }
+      );
+      state.morphAuxAnimations = [surfaceFade, ghostFade].filter(Boolean);
+
+      transformAnim.finished.then(() => {
+        if (state.morphAnimation !== transformAnim) return;
         state.morphAnimation = null;
 
-        // Freeze the end-state transform before canceling WAAPI. The fixed surface is now exactly
-        // over its grid placeholder; restoring normal card geometry in the same JS turn removes
-        // the scale without exposing an intermediate tiny-text frame.
-        try { anim.commitStyles?.(); } catch (_) {}
-        try { anim.cancel(); } catch (_) {}
+        // Keep the destination clone visible while the real card is restored to ordinary grid
+        // layout underneath it. Swapping identical compact pixels avoids the old last-frame snap.
+        surface.style.visibility = 'hidden';
+        if (ghost?.isConnected) ghost.style.opacity = '1';
+        try { transformAnim.cancel(); } catch (_) {}
+        state.morphAuxAnimations.forEach(a => { try { a.cancel(); } catch (_) {} });
+        state.morphAuxAnimations = [];
+
         surface.style.transition = 'none';
         card.classList.remove('expanded', 'morphing', 'animating', 'collapsing');
         surface.style.removeProperty('left');
@@ -2601,17 +2685,24 @@
         surface.style.removeProperty('height');
         surface.style.removeProperty('transform');
         surface.style.removeProperty('transform-origin');
+        surface.style.removeProperty('opacity');
         clearExpandedDetail(card);
         void surface.offsetWidth;
         surface.style.removeProperty('transition');
+
         cancelQueuedPriority(id);
         if (state.expandedId === id) state.expandedId = null;
         panel.classList.remove('hasExpanded');
+
+        requestAnimationFrame(() => {
+          surface.style.removeProperty('visibility');
+          requestAnimationFrame(() => clearCollapseGhost());
+        });
       }).catch(() => {});
 
       setTimeout(() => {
         if (state.expandedId === id && card.classList.contains('collapsing')) finish();
-      }, 380);
+      }, 420);
     }, HOVER_COLLAPSE_DELAY_MS);
   }
 

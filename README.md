@@ -79,3 +79,8 @@ v1.8 改为：
 ## v1.12.0 animation fix
 
 Card FLIP transforms now use an explicit `matrix3d` affine mapping. This fixes the collapse end-point drift where translation was effectively scaled during the shrink, causing the fixed card to stop at an intermediate position before snapping back into the grid.
+
+
+## v1.13 collapse rendering fix
+
+Collapse now uses a compact-card hand-off at the destination slot. The large expanded layout is no longer visibly miniaturized into the 170px card before compact content returns, eliminating the last-frame “tiny card then refresh” artifact.
