@@ -592,13 +592,12 @@
       }
       .card.expanded:not(.animating):not(.collapsing) .cardSurface { will-change:auto; }
 
-      /* v1.14 collapse strategy:
-         Never show a second compact-card clone while the real surface is still moving.
-         The expanded header fades away early, the physical card shell reaches the exact
-         compact visual rectangle, then the same DOM surface returns to grid layout and
-         its compact content fades back in. This removes the visible hand-off card/pop. */
+      /* v1.15 collapse strategy:
+         Collapse no longer scales the expanded surface. Scaling was the source of the
+         tiny-text/blank-card intermediate frame and made the apparent endpoint hard to
+         read. The fixed surface now animates its real pixel geometry (left/top/width/height)
+         directly back to the grid slot, while typography keeps its native scale. */
       .card.collapsing .cardHead { pointer-events:none; }
-      .card.compactRevealing .cardHead,
       .card.compactRevealing .preview,
       .card.compactRevealing .loadingPreview,
       .card.compactRevealing .waitingPreview,
@@ -2590,101 +2589,148 @@
       if (!card.isConnected || state.expandedId !== id) return;
 
       /*
-       * v1.14 removes the destination ghost entirely. In v1.13 that compact clone
-       * became visible before the moving surface had actually reached it, producing
-       * the floating mini-card shown in the screenshot. The same real card surface
-       * now performs the whole collapse, with its readable content hidden before the
-       * final small scale and the compact content revealed only after geometry matches.
+       * v1.15 deliberately abandons transform-scaling for collapse. Even with a correct
+       * affine matrix, shrinking the whole expanded DOM makes its typography collapse to
+       * miniature pixels and can expose a visually misleading intermediate rectangle.
+       * Instead, keep the real surface fixed and animate its explicit viewport geometry.
+       * That gives us an unambiguous endpoint: the grid slot's exact left/top/width/height.
        */
-      const homeRect = compactVisualRect(card);
       const currentRect = freezeSurfaceAtCurrentPixels(surface);
+      const initialHome = compactVisualRect(card);
       card.classList.remove('animating');
       card.classList.add('collapsing');
+      surface.style.transform = 'none';
+      surface.style.transformOrigin = '0 0';
+      surface.style.transition = 'none';
+      setSurfaceRect(surface, currentRect);
+      void surface.offsetWidth;
 
-      const endTransform = rectToTransform(homeRect, currentRect);
       const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
       if (reduced || typeof surface.animate !== 'function') {
+        setSurfaceRect(surface, compactVisualRect(card));
         finish();
         return;
       }
 
-      const head = card.querySelector('.cardHead');
-      const transformAnim = surface.animate(
-        [
-          { transform: IDENTITY_MORPH },
-          { transform: endTransform }
-        ],
+      const px = n => `${Number(n).toFixed(3)}px`;
+      const geometryFrames = (fromRect, toRect) => ([
         {
-          duration: 255,
-          easing: 'cubic-bezier(.22,.61,.36,1)',
-          fill: 'both'
+          left:px(fromRect.left), top:px(fromRect.top),
+          width:px(fromRect.width), height:px(fromRect.height),
+          borderRadius:'22px'
+        },
+        {
+          left:px(toRect.left), top:px(toRect.top),
+          width:px(toRect.width), height:px(toRect.height),
+          borderRadius:'17px'
         }
-      );
-      state.morphAnimation = transformAnim;
+      ]);
 
-      // Typography disappears while still comfortably readable. The background/border
-      // stays fully opaque and keeps moving, so there is still one continuous card shell.
-      const headFade = head?.animate(
-        [{ opacity:1 }, { opacity:0 }],
-        { duration:100, easing:'cubic-bezier(.4,0,1,1)', fill:'both' }
-      );
-      state.morphAuxAnimations = [headFade].filter(Boolean);
+      const runGeometry = (fromRect, toRect, duration = 270) => {
+        const anim = surface.animate(
+          geometryFrames(fromRect, toRect),
+          {
+            duration,
+            easing:'cubic-bezier(.22,.72,.22,1)',
+            fill:'both'
+          }
+        );
+        state.morphAnimation = anim;
+        return anim;
+      };
 
-      transformAnim.finished.then(() => {
-        if (state.morphAnimation !== transformAnim) return;
-        state.morphAnimation = null;
+      let geometryAnim = runGeometry(currentRect, initialHome, 270);
 
-        // Keep all compact content hidden through the fixed -> grid handoff. The shell is
-        // already pixel-aligned with its compact visual rectangle, so no second card is needed.
-        card.classList.add('compactRevealing');
-        if (head) head.style.opacity = '0';
-        try { transformAnim.cancel(); } catch (_) {}
-        state.morphAuxAnimations.forEach(a => { try { a.cancel(); } catch (_) {} });
-        state.morphAuxAnimations = [];
+      const completeHandoff = () => {
+        if (!card.isConnected || state.expandedId !== id) return;
 
-        surface.style.transition = 'none';
-        card.classList.remove('expanded', 'morphing', 'animating', 'collapsing');
-        surface.style.removeProperty('left');
-        surface.style.removeProperty('top');
-        surface.style.removeProperty('width');
-        surface.style.removeProperty('height');
-        surface.style.removeProperty('transform');
-        surface.style.removeProperty('transform-origin');
-        surface.style.removeProperty('opacity');
-        clearExpandedDetail(card);
-        void surface.offsetWidth;
-        surface.style.removeProperty('transition');
+        // Re-measure at the last possible moment. If scroll anchoring, a newly appended
+        // list page, or browser rounding moved the slot during the 270 ms animation,
+        // correct those final pixels before switching fixed -> grid positioning.
+        const latestHome = compactVisualRect(card);
+        const visual = surface.getBoundingClientRect();
+        const delta = Math.max(
+          Math.abs(visual.left - latestHome.left),
+          Math.abs(visual.top - latestHome.top),
+          Math.abs(visual.width - latestHome.width),
+          Math.abs(visual.height - latestHome.height)
+        );
 
-        cancelQueuedPriority(id);
-        if (state.expandedId === id) state.expandedId = null;
-        panel.classList.remove('hasExpanded');
+        const handoff = () => {
+          // Pin the fixed element to the *latest* destination before releasing the WAAPI
+          // layer. There is never a frame where the animation disappears while the card
+          // is still sitting at its old expanded geometry.
+          setSurfaceRect(surface, latestHome);
+          surface.style.transform = 'none';
+          surface.style.borderRadius = '17px';
+          void surface.offsetWidth;
+          try { geometryAnim.cancel(); } catch (_) {}
+          state.morphAnimation = null;
 
-        requestAnimationFrame(() => {
-          const revealTargets = [
-            head,
+          const previewTargets = [
             card.querySelector('.preview'),
             card.querySelector('.loadingPreview'),
             card.querySelector('.waitingPreview'),
             card.querySelector('.compactMedia')
-          ].filter(el => el && getComputedStyle(el).display !== 'none');
+          ].filter(Boolean);
+          card.classList.add('compactRevealing');
+          previewTargets.forEach(el => { el.style.opacity = '0'; });
 
-          // Remove the hard hiding class only after normal compact layout is established.
-          card.classList.remove('compactRevealing');
-          revealTargets.forEach(el => {
-            el.style.opacity = '0';
-            const anim = el.animate(
-              [{ opacity:0 }, { opacity:1 }],
-              { duration:105, easing:'cubic-bezier(0,0,.2,1)', fill:'none' }
-            );
-            anim.finished.finally(() => el.style.removeProperty('opacity')).catch(() => {});
+          // Same task: remove fixed geometry only after its last rendered box is exactly
+          // on the grid slot. The compact card takes over at identical pixels.
+          card.classList.remove('expanded', 'morphing', 'animating', 'collapsing');
+          surface.style.removeProperty('left');
+          surface.style.removeProperty('top');
+          surface.style.removeProperty('width');
+          surface.style.removeProperty('height');
+          surface.style.removeProperty('transform');
+          surface.style.removeProperty('transform-origin');
+          surface.style.removeProperty('border-radius');
+          clearExpandedDetail(card);
+          void surface.offsetWidth;
+          surface.style.removeProperty('transition');
+
+          cancelQueuedPriority(id);
+          if (state.expandedId === id) state.expandedId = null;
+          panel.classList.remove('hasExpanded');
+
+          requestAnimationFrame(() => {
+            card.classList.remove('compactRevealing');
+            previewTargets
+              .filter(el => el.isConnected && getComputedStyle(el).display !== 'none')
+              .forEach(el => {
+                const anim = el.animate(
+                  [{ opacity:0 }, { opacity:1 }],
+                  { duration:90, easing:'cubic-bezier(0,0,.2,1)', fill:'none' }
+                );
+                anim.finished.finally(() => el.style.removeProperty('opacity')).catch(() => {});
+              });
           });
-          if (head) setTimeout(() => head.style.removeProperty('opacity'), 0);
-        });
+        };
+
+        if (delta <= 0.75) {
+          handoff();
+          return;
+        }
+
+        // A tiny endpoint correction is preferable to a one-frame snap. This path is
+        // uncommon, but makes the collapse robust when the list moves while it is closing.
+        try { geometryAnim.cancel(); } catch (_) {}
+        state.morphAnimation = null;
+        setSurfaceRect(surface, visual);
+        void surface.offsetWidth;
+        geometryAnim = runGeometry(visual, latestHome, Math.min(90, Math.max(55, delta * 1.4)));
+        geometryAnim.finished.then(handoff).catch(() => {});
+      };
+
+      geometryAnim.finished.then(() => {
+        if (state.morphAnimation !== geometryAnim) return;
+        completeHandoff();
       }).catch(() => {});
 
       setTimeout(() => {
         if (state.expandedId === id && card.classList.contains('collapsing')) finish();
-      }, 430);
+      }, 560);
     }, HOVER_COLLAPSE_DELAY_MS);
   }
 
