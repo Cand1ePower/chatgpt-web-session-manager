@@ -74,6 +74,7 @@ node demo/playwright/mock-server.mjs
 ## 项目文件
 
 - `manifest.json` — Manifest V3 配置与版本号。
+- `icon*.png` — 浏览器与 Chrome Web Store 使用的扩展图标。
 - `content.js` — UI、缓存、请求调度、Markdown / 图片预览、动画与批量管理逻辑。
 - `CHANGELOG.md` — v0.1 至当前版本的主要迭代记录。
 - `README.en.md` — English documentation。

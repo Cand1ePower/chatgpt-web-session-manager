@@ -74,6 +74,7 @@ Generated demo artifacts:
 ## Project files
 
 - `manifest.json` — Manifest V3 configuration and version.
+- `icon*.png` — Extension icons for Chrome and the Chrome Web Store.
 - `content.js` — UI, cache, request scheduling, Markdown / image previews, animation, and batch management.
 - `CHANGELOG.md` — Release history from v0.1 through the current version.
 - `README.md` — Default Chinese documentation shown by GitHub.
