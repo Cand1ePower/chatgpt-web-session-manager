@@ -3,3 +3,13 @@ Thumbs.db
 *.zip
 *.crx
 *.pem
+
+# Local demo tooling and browser state.
+node_modules/
+demo/**/node_modules/
+demo/**/.hyperframes/
+demo/**/.tmp/
+demo/playwright/.sessions/
+**/.playwright-cli/
+demo/hyperframes/renders/snapshots/
+demo/hyperframes/renders/snapshots-final/

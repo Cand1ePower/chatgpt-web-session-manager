@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=1280, height=720" />
+    <title>ChatDeck · HyperFrames demo</title>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { width: 1280px; height: 720px; margin: 0; overflow: hidden; background: #111318; }
+      body { color: #f4f1ea; font-family: "Microsoft YaHei", sans-serif; }
+      @font-face { font-family: "Microsoft YaHei"; src: local("Microsoft YaHei"); }
+      @font-face { font-family: "Cascadia Mono"; src: local("Cascadia Mono"); }
+      [data-composition-id="chatdeck-demo"] { position: relative; width: 100%; height: 100%; overflow: hidden; background: #111318; }
+      .scene { position: absolute; inset: 0; overflow: hidden; background: #111318; }
+      .scene-content { position: relative; display: flex; flex-direction: column; width: 100%; height: 100%; padding: 48px 64px 40px; gap: 28px; }
+      .scene::before { content: ""; position: absolute; width: 520px; height: 520px; right: -140px; top: -190px; border-radius: 50%; background: radial-gradient(circle, rgba(104,120,255,.24) 0, rgba(104,120,255,0) 70%); }
+      .scene::after { content: ""; position: absolute; width: 680px; height: 380px; left: -290px; bottom: -210px; border-radius: 50%; background: radial-gradient(circle, rgba(217,243,108,.07) 0, rgba(217,243,108,0) 70%); }
+      .scene-topline, .scene-foot { display: flex; align-items: center; justify-content: space-between; position: relative; z-index: 2; color: #c2beb5; font: 700 14px/1.2 "Cascadia Mono", "Microsoft YaHei", monospace; letter-spacing: .08em; }
+      .scene-topline { padding-bottom: 16px; border-bottom: 1px solid rgba(244,241,234,.14); }
+      .scene-status { padding: 7px 10px; border: 1px solid rgba(217,243,108,.36); border-radius: 999px; color: #d9f36c; background: rgba(217,243,108,.06); font-size: 12px; letter-spacing: .04em; }
+      .scene-layout { position: relative; z-index: 2; display: grid; grid-template-columns: 0.82fr 1.18fr; align-items: center; min-height: 0; flex: 1; gap: 42px; }
+      .copy-block { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 18px; }
+      .kicker { color: #6878ff; font: 700 15px/1.2 "Cascadia Mono", "Microsoft YaHei", monospace; letter-spacing: .12em; }
+      h1 { max-width: 510px; margin: 0; font-size: 74px; line-height: .99; letter-spacing: -.07em; font-weight: 900; }
+      .copy { max-width: 450px; margin: 0; color: rgba(244,241,234,.68); font-size: 23px; line-height: 1.42; font-weight: 350; }
+      .metric { display: flex; align-items: baseline; gap: 12px; margin-top: 6px; padding-top: 17px; border-top: 1px solid rgba(244,241,234,.16); color: #c2beb5; font: 700 14px/1.4 "Cascadia Mono", "Microsoft YaHei", monospace; }
+      .metric strong { color: #f4f1ea; font: 900 28px/1 "Microsoft YaHei", sans-serif; font-variant-numeric: tabular-nums; }
+      .screen-frame { position: relative; width: 100%; max-width: 650px; margin: 0; padding: 10px; border: 1px solid rgba(244,241,234,.2); border-radius: 25px; background: rgba(244,241,234,.08); box-shadow: 0 28px 80px rgba(0,0,0,.32), 0 0 0 8px rgba(104,120,255,.05); transform: rotate(1.2deg); }
+      .screen-frame::before { content: ""; position: absolute; top: 18px; left: 24px; z-index: 2; width: 8px; height: 8px; border-radius: 50%; background: #d9f36c; box-shadow: 16px 0 #6878ff, 32px 0 rgba(244,241,234,.32); }
+      .screen-frame img { display: block; width: 100%; height: 410px; object-fit: cover; object-position: top center; border-radius: 17px; background: #f4f1ea; }
+      .scene-foot { padding-top: 16px; border-top: 1px solid rgba(244,241,234,.14); font-size: 12px; }
+      .ghost { position: absolute; right: 25px; bottom: -36px; z-index: 1; color: rgba(244,241,234,.04); font: 900 180px/.8 "Microsoft YaHei", sans-serif; letter-spacing: -.1em; pointer-events: none; }
+      .transition-wipe { position: absolute; inset: 0; z-index: 20; background: #6878ff; transform: scaleX(0); transform-origin: left center; pointer-events: none; }
+      .transition-wipe::after { content: ""; position: absolute; inset: 0; background: #d9f36c; clip-path: polygon(82% 0, 100% 0, 100% 100%, 64% 100%); opacity: .9; }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="chatdeck-demo" data-start="0" data-duration="9" data-width="1280" data-height="720">
+      <section id="scene-one" class="scene clip" data-start="0" data-duration="3" data-track-index="1">
+        <div class="scene-content">
+          <div class="scene-topline" id="s1-topline"><span>01 / FIND THE THREAD</span><span class="scene-status">SYNTHETIC DEMO</span></div>
+          <div class="scene-layout">
+            <div class="copy-block">
+              <div class="kicker" id="s1-kicker">CHATDECK · v1.17.0</div>
+              <h1 id="s1-title">把历史对话，变成可以操作的卡片。</h1>
+              <p class="copy" id="s1-copy">分批浏览、快速定位，再把真正重要的内容留在眼前。</p>
+              <div class="metric" id="s1-metric"><strong>8</strong><span>synthetic conversations in this frame</span></div>
+            </div>
+            <figure class="screen-frame" id="s1-screen"><img src="assets/01-overview.png" alt="ChatDeck card overview" /></figure>
+          </div>
+          <div class="scene-foot" id="s1-foot"><span>LOCAL-FIRST CONVERSATION VIEW</span><span>01 / 03</span></div>
+          <div class="ghost" data-layout-ignore aria-hidden="true">CARD</div>
+        </div>
+      </section>
+
+      <section id="scene-two" class="scene clip" data-start="3" data-duration="3" data-track-index="1">
+        <div class="scene-content">
+          <div class="scene-topline" id="s2-topline"><span>02 / MAKE A SELECTION</span><span class="scene-status">NO ACCOUNT DATA</span></div>
+          <div class="scene-layout">
+            <div class="copy-block">
+              <div class="kicker" id="s2-kicker">SELECT · SORT · ACT</div>
+              <h1 id="s2-title">看见状态，也看见下一步。</h1>
+              <p class="copy" id="s2-copy">选中的卡片保留清晰的视觉反馈，批量归档与删除都有明确的确认边界。</p>
+              <div class="metric" id="s2-metric"><strong>5</strong><span>cached locally · 3 ready to read</span></div>
+            </div>
+            <figure class="screen-frame" id="s2-screen"><img src="assets/02-selected.png" alt="ChatDeck selected cards" /></figure>
+          </div>
+          <div class="scene-foot" id="s2-foot"><span>LOCAL CACHE / RATE-AWARE QUEUE</span><span>02 / 03</span></div>
+          <div class="ghost" data-layout-ignore aria-hidden="true">SELECT</div>
+        </div>
+      </section>
+
+      <section id="scene-three" class="scene clip" data-start="6" data-duration="3" data-track-index="1">
+        <div class="scene-content">
+          <div class="scene-topline" id="s3-topline"><span>03 / OPEN THE DETAIL</span><span class="scene-status">REAL-CARD FLIP</span></div>
+          <div class="scene-layout">
+            <div class="copy-block">
+              <div class="kicker" id="s3-kicker">EXPAND · SEARCH · RETURN</div>
+              <h1 id="s3-title">从摘要进入正文，再平滑回到列表。</h1>
+              <p class="copy" id="s3-copy">真实卡片承载展开动作，摘要、消息和动效都围绕阅读顺序组织。</p>
+              <div class="metric" id="s3-metric"><strong>16</strong><span>messages rendered first, then chunked</span></div>
+            </div>
+            <figure class="screen-frame" id="s3-screen"><img src="assets/03-expanded.png" alt="ChatDeck expanded conversation" /></figure>
+          </div>
+          <div class="scene-foot" id="s3-foot"><span>CHATGPT CARD MANAGER / DEMO COMPLETE</span><span>03 / 03</span></div>
+          <div class="ghost" data-layout-ignore aria-hidden="true">DETAIL</div>
+        </div>
+      </section>
+
+      <div id="wipe-one" class="transition-wipe clip" data-start="2.72" data-duration="0.64" data-track-index="5" aria-hidden="true"></div>
+      <div id="wipe-two" class="transition-wipe clip" data-start="5.72" data-duration="0.64" data-track-index="5" aria-hidden="true"></div>
+    </div>
+    <script>
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+      const enter = (selector, vars, at) => tl.from(selector, { ...vars, opacity: 0 }, at);
+
+      enter('#s1-topline', { y: -18, duration: .45, ease: 'power3.out' }, .16);
+      enter('#s1-kicker', { x: -36, duration: .42, ease: 'expo.out' }, .28);
+      enter('#s1-title', { y: 44, duration: .72, ease: 'power4.out' }, .36);
+      enter('#s1-copy', { y: 28, duration: .55, ease: 'sine.out' }, .72);
+      enter('#s1-metric', { scale: .88, duration: .46, ease: 'back.out(1.4)' }, .92);
+      enter('#s1-screen', { x: 54, rotation: 4, duration: .8, ease: 'power3.out' }, .34);
+      enter('#s1-foot', { y: 18, duration: .42, ease: 'power2.out' }, 1.02);
+      tl.to('#scene-one .ghost', { x: -28, duration: 2.2, ease: 'sine.inOut' }, .5);
+
+      enter('#s2-topline', { y: -18, duration: .42, ease: 'power2.out' }, 3.12);
+      enter('#s2-kicker', { x: 42, duration: .5, ease: 'expo.out' }, 3.22);
+      enter('#s2-title', { scale: .86, duration: .65, ease: 'back.out(1.25)' }, 3.3);
+      enter('#s2-copy', { y: 30, duration: .5, ease: 'sine.out' }, 3.72);
+      enter('#s2-metric', { x: -28, duration: .4, ease: 'power3.out' }, 3.88);
+      enter('#s2-screen', { x: 48, rotation: -3, duration: .74, ease: 'power4.out' }, 3.2);
+      enter('#s2-foot', { y: 18, duration: .4, ease: 'power2.out' }, 4.1);
+      tl.to('#scene-two .ghost', { y: -20, duration: 2.2, ease: 'sine.inOut' }, 3.4);
+
+      enter('#s3-topline', { y: -18, duration: .42, ease: 'power2.out' }, 6.12);
+      enter('#s3-kicker', { x: -38, duration: .48, ease: 'expo.out' }, 6.22);
+      enter('#s3-title', { y: 42, duration: .68, ease: 'power4.out' }, 6.3);
+      enter('#s3-copy', { y: 26, duration: .5, ease: 'sine.out' }, 6.74);
+      enter('#s3-metric', { scale: .9, duration: .45, ease: 'back.out(1.35)' }, 6.9);
+      enter('#s3-screen', { x: 58, rotation: 3, duration: .78, ease: 'power3.out' }, 6.22);
+      enter('#s3-foot', { y: 18, duration: .4, ease: 'power2.out' }, 7.1);
+      tl.to('#scene-three .ghost', { x: 26, duration: 2.1, ease: 'sine.inOut' }, 6.4);
+
+      tl.fromTo('#wipe-one', { scaleX: 0 }, { scaleX: 1, duration: .25, ease: 'power4.in' }, 2.72);
+      tl.to('#wipe-one', { scaleX: 0, transformOrigin: 'right center', duration: .28, ease: 'power3.out' }, 3.0);
+      tl.fromTo('#wipe-two', { scaleX: 0 }, { scaleX: 1, duration: .25, ease: 'power4.in' }, 5.72);
+      tl.to('#wipe-two', { scaleX: 0, transformOrigin: 'right center', duration: .28, ease: 'power3.out' }, 6.0);
+      tl.to(['#s3-title', '#s3-copy', '#s3-screen'], { opacity: 0, duration: .28, ease: 'power2.in' }, 8.65);
+      window.__timelines['chatdeck-demo'] = tl;
+    </script>
+  </body>
+</html>

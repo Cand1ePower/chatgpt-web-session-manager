@@ -1,0 +1,158 @@
+{
+  "items": [
+    { "id": "demo-001", "title": "周末厨房的菜单整理", "create_time": "2026-08-30T09:12:00.000Z", "update_time": "2026-08-30T09:28:00.000Z" },
+    { "id": "demo-002", "title": "把灵感变成一页旅行计划", "create_time": "2026-08-29T14:20:00.000Z", "update_time": "2026-08-29T14:42:00.000Z" },
+    { "id": "demo-003", "title": "产品发布前的检查清单", "create_time": "2026-08-28T11:05:00.000Z", "update_time": "2026-08-28T11:38:00.000Z" },
+    { "id": "demo-004", "title": "给团队写一封简短更新", "create_time": "2026-08-27T16:04:00.000Z", "update_time": "2026-08-27T16:16:00.000Z" },
+    { "id": "demo-005", "title": "三种学习路线的比较", "create_time": "2026-08-26T08:40:00.000Z", "update_time": "2026-08-26T09:03:00.000Z" },
+    { "id": "demo-006", "title": "桌面收纳的低成本方案", "create_time": "2026-08-25T19:30:00.000Z", "update_time": "2026-08-25T19:47:00.000Z" },
+    { "id": "demo-007", "title": "把会议笔记整理成行动项", "create_time": "2026-08-24T10:14:00.000Z", "update_time": "2026-08-24T10:36:00.000Z" },
+    { "id": "demo-008", "title": "读书卡片：关于注意力", "create_time": "2026-08-23T21:02:00.000Z", "update_time": "2026-08-23T21:24:00.000Z" }
+  ],
+  "details": {
+    "demo-001": {
+      "create_time": "2026-08-30T09:12:00.000Z",
+      "current_node": "demo-001-a2",
+      "mapping": {
+        "demo-001-root": { "id": "demo-001-root", "parent": null, "message": null },
+        "demo-001-u1": { "id": "demo-001-u1", "parent": "demo-001-root", "message": { "author": { "role": "user" }, "create_time": "2026-08-30T09:12:00.000Z", "content": { "parts": ["帮我把周末的晚餐安排得简单一点，最好能共用几种食材。"] } } },
+        "demo-001-a1": { "id": "demo-001-a1", "parent": "demo-001-u1", "message": { "author": { "role": "assistant" }, "create_time": "2026-08-30T09:14:00.000Z", "content": { "parts": ["可以用番茄、鸡蛋、青菜和米饭做两顿：第一晚做番茄鸡蛋饭，第二晚把剩下的食材变成青菜蛋花汤。"] } } },
+        "demo-001-u2": { "id": "demo-001-u2", "parent": "demo-001-a1", "message": { "author": { "role": "user" }, "create_time": "2026-08-30T09:20:00.000Z", "content": { "parts": ["再加一个不辣的备选。"] } } },
+        "demo-001-a2": { "id": "demo-001-a2", "parent": "demo-001-u2", "message": { "author": { "role": "assistant" }, "create_time": "2026-08-30T09:28:00.000Z", "content": { "parts": ["备选可以是葱油拌面：只需面条、葱和少量酱油，十分钟内完成。"] } } }
+      },
+      "cacheMessages": [
+        { "role": "user", "text": "帮我把周末的晚餐安排得简单一点，最好能共用几种食材。", "time": "2026-08-30T09:12:00.000Z", "images": [] },
+        { "role": "assistant", "text": "可以用番茄、鸡蛋、青菜和米饭做两顿：第一晚做番茄鸡蛋饭，第二晚把剩下的食材变成青菜蛋花汤。", "time": "2026-08-30T09:14:00.000Z", "images": [] },
+        { "role": "user", "text": "再加一个不辣的备选。", "time": "2026-08-30T09:20:00.000Z", "images": [] },
+        { "role": "assistant", "text": "备选可以是葱油拌面：只需面条、葱和少量酱油，十分钟内完成。", "time": "2026-08-30T09:28:00.000Z", "images": [] }
+      ]
+    },
+    "demo-002": {
+      "create_time": "2026-08-29T14:20:00.000Z",
+      "current_node": "demo-002-a2",
+      "mapping": {
+        "demo-002-root": { "id": "demo-002-root", "parent": null, "message": null },
+        "demo-002-u1": { "id": "demo-002-u1", "parent": "demo-002-root", "message": { "author": { "role": "user" }, "create_time": "2026-08-29T14:20:00.000Z", "content": { "parts": ["我有三天假期，想安排一条节奏不赶的城市漫游路线。"] } } },
+        "demo-002-a1": { "id": "demo-002-a1", "parent": "demo-002-u1", "message": { "author": { "role": "assistant" }, "create_time": "2026-08-29T14:25:00.000Z", "content": { "parts": ["可以按‘一条街区、一个展览、一顿慢餐’的节奏规划，每天只保留一个必达点。"] } } },
+        "demo-002-u2": { "id": "demo-002-u2", "parent": "demo-002-a1", "message": { "author": { "role": "user" }, "create_time": "2026-08-29T14:34:00.000Z", "content": { "parts": ["请把每天的上午和傍晚分开写。"] } } },
+        "demo-002-a2": { "id": "demo-002-a2", "parent": "demo-002-u2", "message": { "author": { "role": "assistant" }, "create_time": "2026-08-29T14:42:00.000Z", "content": { "parts": ["上午留给步行和咖啡，午后安排室内展览，傍晚回到河边或老街散步。"] } } }
+      },
+      "cacheMessages": [
+        { "role": "user", "text": "我有三天假期，想安排一条节奏不赶的城市漫游路线。", "time": "2026-08-29T14:20:00.000Z", "images": [] },
+        { "role": "assistant", "text": "可以按‘一条街区、一个展览、一顿慢餐’的节奏规划，每天只保留一个必达点。", "time": "2026-08-29T14:25:00.000Z", "images": [] },
+        { "role": "user", "text": "请把每天的上午和傍晚分开写。", "time": "2026-08-29T14:34:00.000Z", "images": [] },
+        { "role": "assistant", "text": "上午留给步行和咖啡，午后安排室内展览，傍晚回到河边或老街散步。", "time": "2026-08-29T14:42:00.000Z", "images": [] }
+      ]
+    },
+    "demo-003": {
+      "create_time": "2026-08-28T11:05:00.000Z",
+      "current_node": "demo-003-a4",
+      "mapping": {
+        "demo-003-root": { "id": "demo-003-root", "parent": null, "message": null },
+        "demo-003-u1": { "id": "demo-003-u1", "parent": "demo-003-root", "message": { "author": { "role": "user" }, "create_time": "2026-08-28T11:05:00.000Z", "content": { "parts": ["帮我做一份产品发布前的检查清单，重点关注用户看得到的细节。"] } } },
+        "demo-003-a1": { "id": "demo-003-a1", "parent": "demo-003-u1", "message": { "author": { "role": "assistant" }, "create_time": "2026-08-28T11:12:00.000Z", "content": { "parts": ["可以按内容、流程和反馈三层检查：标题与说明是否清楚；关键路径是否能完成；失败时是否给出下一步。"] } } },
+        "demo-003-u2": { "id": "demo-003-u2", "parent": "demo-003-a1", "message": { "author": { "role": "user" }, "create_time": "2026-08-28T11:21:00.000Z", "content": { "parts": ["把它变成发布当天可以逐项勾选的版本。"] } } },
+        "demo-003-a2": { "id": "demo-003-a2", "parent": "demo-003-u2", "message": { "author": { "role": "assistant" }, "create_time": "2026-08-28T11:24:00.000Z", "content": { "parts": ["发布当天先做一轮桌面端检查，再用窄屏宽度复核一次，最后从新用户视角走完一条完整路径。"] } } },
+        "demo-003-u3": { "id": "demo-003-u3", "parent": "demo-003-a2", "message": { "author": { "role": "user" }, "create_time": "2026-08-28T11:31:00.000Z", "content": { "parts": ["再加上发布后半小时要观察的指标。"] } } },
+        "demo-003-a3": { "id": "demo-003-a3", "parent": "demo-003-u3", "message": { "author": { "role": "assistant" }, "create_time": "2026-08-28T11:34:00.000Z", "content": { "parts": ["发布后观察进入率、关键按钮完成率、错误反馈和客服新问题；每十分钟记录一次，不要只看总访问量。"] } } },
+        "demo-003-u4": { "id": "demo-003-u4", "parent": "demo-003-a3", "message": { "author": { "role": "user" }, "create_time": "2026-08-28T11:36:00.000Z", "content": { "parts": ["用一句话总结检查原则。"] } } },
+        "demo-003-a4": { "id": "demo-003-a4", "parent": "demo-003-u4", "message": { "author": { "role": "assistant" }, "create_time": "2026-08-28T11:38:00.000Z", "content": { "parts": ["先走通，再看懂，最后确认出问题时用户知道下一步。"] } } }
+      },
+      "cacheMessages": [
+        { "role": "user", "text": "帮我做一份产品发布前的检查清单，重点关注用户看得到的细节。", "time": "2026-08-28T11:05:00.000Z", "images": [] },
+        { "role": "assistant", "text": "可以按内容、流程和反馈三层检查：标题与说明是否清楚；关键路径是否能完成；失败时是否给出下一步。", "time": "2026-08-28T11:12:00.000Z", "images": [] },
+        { "role": "user", "text": "把它变成发布当天可以逐项勾选的版本。", "time": "2026-08-28T11:21:00.000Z", "images": [] },
+        { "role": "assistant", "text": "发布当天先做一轮桌面端检查，再用窄屏宽度复核一次，最后从新用户视角走完一条完整路径。", "time": "2026-08-28T11:24:00.000Z", "images": [] },
+        { "role": "user", "text": "再加上发布后半小时要观察的指标。", "time": "2026-08-28T11:31:00.000Z", "images": [] },
+        { "role": "assistant", "text": "发布后观察进入率、关键按钮完成率、错误反馈和客服新问题；每十分钟记录一次，不要只看总访问量。", "time": "2026-08-28T11:34:00.000Z", "images": [] },
+        { "role": "user", "text": "用一句话总结检查原则。", "time": "2026-08-28T11:36:00.000Z", "images": [] },
+        { "role": "assistant", "text": "先走通，再看懂，最后确认出问题时用户知道下一步。", "time": "2026-08-28T11:38:00.000Z", "images": [] }
+      ]
+    },
+    "demo-004": {
+      "create_time": "2026-08-27T16:04:00.000Z",
+      "current_node": "demo-004-a2",
+      "mapping": {
+        "demo-004-root": { "id": "demo-004-root", "parent": null, "message": null },
+        "demo-004-u1": { "id": "demo-004-u1", "parent": "demo-004-root", "message": { "author": { "role": "user" }, "create_time": "2026-08-27T16:04:00.000Z", "content": { "parts": ["帮我写一封给团队的项目进度更新，语气清楚但不要太正式。"] } } },
+        "demo-004-a1": { "id": "demo-004-a1", "parent": "demo-004-u1", "message": { "author": { "role": "assistant" }, "create_time": "2026-08-27T16:08:00.000Z", "content": { "parts": ["可以分成已完成、正在处理、需要协助三段，每段只放最重要的一件事。"] } } },
+        "demo-004-u2": { "id": "demo-004-u2", "parent": "demo-004-a1", "message": { "author": { "role": "user" }, "create_time": "2026-08-27T16:13:00.000Z", "content": { "parts": ["加一个周五下午的时间点。"] } } },
+        "demo-004-a2": { "id": "demo-004-a2", "parent": "demo-004-u2", "message": { "author": { "role": "assistant" }, "create_time": "2026-08-27T16:16:00.000Z", "content": { "parts": ["周五下午会发出第一版，收集半天反馈后再决定是否调整范围。"] } } }
+      },
+      "cacheMessages": [
+        { "role": "user", "text": "帮我写一封给团队的项目进度更新，语气清楚但不要太正式。", "time": "2026-08-27T16:04:00.000Z", "images": [] },
+        { "role": "assistant", "text": "可以分成已完成、正在处理、需要协助三段，每段只放最重要的一件事。", "time": "2026-08-27T16:08:00.000Z", "images": [] },
+        { "role": "user", "text": "加一个周五下午的时间点。", "time": "2026-08-27T16:13:00.000Z", "images": [] },
+        { "role": "assistant", "text": "周五下午会发出第一版，收集半天反馈后再决定是否调整范围。", "time": "2026-08-27T16:16:00.000Z", "images": [] }
+      ]
+    },
+    "demo-005": {
+      "create_time": "2026-08-26T08:40:00.000Z",
+      "current_node": "demo-005-a2",
+      "mapping": {
+        "demo-005-root": { "id": "demo-005-root", "parent": null, "message": null },
+        "demo-005-u1": { "id": "demo-005-u1", "parent": "demo-005-root", "message": { "author": { "role": "user" }, "create_time": "2026-08-26T08:40:00.000Z", "content": { "parts": ["比较三种学习路线：短课、系统书籍和边做项目边学。"] } } },
+        "demo-005-a1": { "id": "demo-005-a1", "parent": "demo-005-u1", "message": { "author": { "role": "assistant" }, "create_time": "2026-08-26T08:47:00.000Z", "content": { "parts": ["短课适合建立地图，书籍适合形成体系，项目适合暴露真实问题；三者可以按 2:5:3 的比例组合。"] } } },
+        "demo-005-u2": { "id": "demo-005-u2", "parent": "demo-005-a1", "message": { "author": { "role": "user" }, "create_time": "2026-08-26T08:56:00.000Z", "content": { "parts": ["我每周只有六小时。"] } } },
+        "demo-005-a2": { "id": "demo-005-a2", "parent": "demo-005-u2", "message": { "author": { "role": "assistant" }, "create_time": "2026-08-26T09:03:00.000Z", "content": { "parts": ["每周六小时可以分成一小时看地图、两小时读核心章节、三小时完成一个很小的可运行结果。"] } } }
+      },
+      "cacheMessages": [
+        { "role": "user", "text": "比较三种学习路线：短课、系统书籍和边做项目边学。", "time": "2026-08-26T08:40:00.000Z", "images": [] },
+        { "role": "assistant", "text": "短课适合建立地图，书籍适合形成体系，项目适合暴露真实问题；三者可以按 2:5:3 的比例组合。", "time": "2026-08-26T08:47:00.000Z", "images": [] },
+        { "role": "user", "text": "我每周只有六小时。", "time": "2026-08-26T08:56:00.000Z", "images": [] },
+        { "role": "assistant", "text": "每周六小时可以分成一小时看地图、两小时读核心章节、三小时完成一个很小的可运行结果。", "time": "2026-08-26T09:03:00.000Z", "images": [] }
+      ]
+    },
+    "demo-006": {
+      "create_time": "2026-08-25T19:30:00.000Z",
+      "current_node": "demo-006-a2",
+      "mapping": {
+        "demo-006-root": { "id": "demo-006-root", "parent": null, "message": null },
+        "demo-006-u1": { "id": "demo-006-u1", "parent": "demo-006-root", "message": { "author": { "role": "user" }, "create_time": "2026-08-25T19:30:00.000Z", "content": { "parts": ["给我一个桌面收纳的低成本方案，尽量不买新的大件。"] } } },
+        "demo-006-a1": { "id": "demo-006-a1", "parent": "demo-006-u1", "message": { "author": { "role": "assistant" }, "create_time": "2026-08-25T19:36:00.000Z", "content": { "parts": ["先把高频物品放到伸手可及的位置，再用现有盒子按‘输入、处理中、归档’分区。"] } } },
+        "demo-006-u2": { "id": "demo-006-u2", "parent": "demo-006-a1", "message": { "author": { "role": "user" }, "create_time": "2026-08-25T19:43:00.000Z", "content": { "parts": ["需要一个十五分钟内能完成的版本。"] } } },
+        "demo-006-a2": { "id": "demo-006-a2", "parent": "demo-006-u2", "message": { "author": { "role": "assistant" }, "create_time": "2026-08-25T19:47:00.000Z", "content": { "parts": ["十五分钟版只做三件事：清空桌面、留下今天会用的物品、把剩余物品放入一个待整理盒。"] } } }
+      },
+      "cacheMessages": [
+        { "role": "user", "text": "给我一个桌面收纳的低成本方案，尽量不买新的大件。", "time": "2026-08-25T19:30:00.000Z", "images": [] },
+        { "role": "assistant", "text": "先把高频物品放到伸手可及的位置，再用现有盒子按‘输入、处理中、归档’分区。", "time": "2026-08-25T19:36:00.000Z", "images": [] },
+        { "role": "user", "text": "需要一个十五分钟内能完成的版本。", "time": "2026-08-25T19:43:00.000Z", "images": [] },
+        { "role": "assistant", "text": "十五分钟版只做三件事：清空桌面、留下今天会用的物品、把剩余物品放入一个待整理盒。", "time": "2026-08-25T19:47:00.000Z", "images": [] }
+      ]
+    },
+    "demo-007": {
+      "create_time": "2026-08-24T10:14:00.000Z",
+      "current_node": "demo-007-a2",
+      "mapping": {
+        "demo-007-root": { "id": "demo-007-root", "parent": null, "message": null },
+        "demo-007-u1": { "id": "demo-007-u1", "parent": "demo-007-root", "message": { "author": { "role": "user" }, "create_time": "2026-08-24T10:14:00.000Z", "content": { "parts": ["把这次会议笔记整理成三个行动项。"] } } },
+        "demo-007-a1": { "id": "demo-007-a1", "parent": "demo-007-u1", "message": { "author": { "role": "assistant" }, "create_time": "2026-08-24T10:22:00.000Z", "content": { "parts": ["行动项一：确认范围；行动项二：补齐示例；行动项三：周三前回收反馈。"] } } },
+        "demo-007-u2": { "id": "demo-007-u2", "parent": "demo-007-a1", "message": { "author": { "role": "user" }, "create_time": "2026-08-24T10:31:00.000Z", "content": { "parts": ["把每项都改成动词开头。"] } } },
+        "demo-007-a2": { "id": "demo-007-a2", "parent": "demo-007-u2", "message": { "author": { "role": "assistant" }, "create_time": "2026-08-24T10:36:00.000Z", "content": { "parts": ["确认范围；补齐示例；在周三前回收反馈。"] } } }
+      },
+      "cacheMessages": [
+        { "role": "user", "text": "把这次会议笔记整理成三个行动项。", "time": "2026-08-24T10:14:00.000Z", "images": [] },
+        { "role": "assistant", "text": "行动项一：确认范围；行动项二：补齐示例；行动项三：周三前回收反馈。", "time": "2026-08-24T10:22:00.000Z", "images": [] },
+        { "role": "user", "text": "把每项都改成动词开头。", "time": "2026-08-24T10:31:00.000Z", "images": [] },
+        { "role": "assistant", "text": "确认范围；补齐示例；在周三前回收反馈。", "time": "2026-08-24T10:36:00.000Z", "images": [] }
+      ]
+    },
+    "demo-008": {
+      "create_time": "2026-08-23T21:02:00.000Z",
+      "current_node": "demo-008-a2",
+      "mapping": {
+        "demo-008-root": { "id": "demo-008-root", "parent": null, "message": null },
+        "demo-008-u1": { "id": "demo-008-u1", "parent": "demo-008-root", "message": { "author": { "role": "user" }, "create_time": "2026-08-23T21:02:00.000Z", "content": { "parts": ["用三句话总结一本关于注意力的书。"] } } },
+        "demo-008-a1": { "id": "demo-008-a1", "parent": "demo-008-u1", "message": { "author": { "role": "assistant" }, "create_time": "2026-08-23T21:10:00.000Z", "content": { "parts": ["注意力不是无限资源。环境比意志更容易改变行为。真正重要的工作需要提前留出不被打断的空间。"] } } },
+        "demo-008-u2": { "id": "demo-008-u2", "parent": "demo-008-a1", "message": { "author": { "role": "user" }, "create_time": "2026-08-23T21:20:00.000Z", "content": { "parts": ["给我一个今天就能试的动作。"] } } },
+        "demo-008-a2": { "id": "demo-008-a2", "parent": "demo-008-u2", "message": { "author": { "role": "assistant" }, "create_time": "2026-08-23T21:24:00.000Z", "content": { "parts": ["把最重要的一小时写进日历，并在开始前关闭一个会打断你的入口。"] } } }
+      },
+      "cacheMessages": [
+        { "role": "user", "text": "用三句话总结一本关于注意力的书。", "time": "2026-08-23T21:02:00.000Z", "images": [] },
+        { "role": "assistant", "text": "注意力不是无限资源。环境比意志更容易改变行为。真正重要的工作需要提前留出不被打断的空间。", "time": "2026-08-23T21:10:00.000Z", "images": [] },
+        { "role": "user", "text": "给我一个今天就能试的动作。", "time": "2026-08-23T21:20:00.000Z", "images": [] },
+        { "role": "assistant", "text": "把最重要的一小时写进日历，并在开始前关闭一个会打断你的入口。", "time": "2026-08-23T21:24:00.000Z", "images": [] }
+      ]
+    }
+  }
+}

@@ -24,8 +24,12 @@
   const MAX_429_RETRIES = 0;
   const HOVER_EXPAND_DELAY_MS = 500;
   const HOVER_COLLAPSE_DELAY_MS = 110;
+  const EXPANDED_INITIAL_MESSAGES = 16;
+  const EXPANDED_RENDER_CHUNK = 12;
+  const MAX_EXPANDED_MESSAGES = 80;
   const CACHE_DB_NAME = 'chatdeck-cache-v1';
   const CACHE_STORE = 'conversations';
+  const PARSER_SCHEMA = 3;
   const CACHE_SOFT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
   const PREFETCH_DISABLE_AFTER_429_MS = 30 * 60 * 1000;
 
@@ -59,9 +63,12 @@
     hoverTimer: null,
     collapseTimer: null,
     morphAnimation: null,
-    morphAuxAnimations: [],
+    pendingCardUpdates: new Set(),
+    expandedRenderFrame: null,
+    expandedRenderGeneration: 0,
     lastManualRequestAt: 0,
     manualLoading: false,
+    preparingBatch: false,
     manualPendingIds: new Set(),
     manualDone: 0,
     manualFailed: 0,
@@ -75,6 +82,7 @@
     pendingFastChoice: false,
     pendingFastLoad: false,
     fastConfirmedForSession: false,
+    fastWarningLastFocus: null,
     autoExpand: localStorage.getItem('chatdeck:autoExpand') !== '0',
     imageUrlCache: new Map(),
     imagePromises: new Map(),
@@ -86,7 +94,12 @@
     lastUserActivityAt: Date.now(),
     idlePrefetchTimer: null,
     panelAnimating: false,
+    lastFocusedElement: null,
+    imageViewerLastFocus: null,
   };
+
+  const preciseHoverQuery = matchMedia('(hover: hover) and (pointer: fine)');
+  const cardInteractiveSelector = 'button, input, label, a, .mediaTile, .compactMedia';
 
   const host = document.createElement('div');
   host.id = 'cgpt-card-manager-host';
@@ -98,6 +111,14 @@
       :host { all: initial; }
       * { box-sizing: border-box; }
       button, input { font: inherit; }
+      button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
+        outline:2px solid rgba(82,125,255,.72); outline-offset:2px;
+      }
+      .srOnly {
+        position:absolute !important; width:1px !important; height:1px !important; padding:0 !important;
+        margin:-1px !important; overflow:hidden !important; clip:rect(0,0,0,0) !important;
+        white-space:nowrap !important; border:0 !important;
+      }
       .launcher {
         position: fixed; right: 22px; bottom: 22px; z-index: 2147483646;
         width: 48px; height: 48px; border: 0; border-radius: 15px;
@@ -200,7 +221,7 @@
         position:absolute; inset:0; height:170px; overflow:hidden;
         border-radius:17px; background:rgba(255,255,255,.76); border:1px solid rgba(0,0,0,.08);
         box-shadow:0 4px 18px rgba(0,0,0,.045);
-        transition:box-shadow .22s ease, border-color .18s ease, border-radius .28s cubic-bezier(.16,1,.3,1), transform .20s cubic-bezier(.2,.8,.2,1);
+        transition:box-shadow .22s ease, border-color .18s ease, transform .20s cubic-bezier(.2,.8,.2,1);
         transform-origin:center center; z-index:1;
       }
       @media (prefers-color-scheme: dark) { .cardSurface { background:#202022; border-color:rgba(255,255,255,.09); box-shadow:none; } }
@@ -213,7 +234,7 @@
         will-change:transform;
         /* Geometry is never transitioned with left/top/width/height.
            A compositor-only FLIP transform keeps the first pixel exactly on the hovered card. */
-        transition:box-shadow .18s ease, border-color .16s ease, border-radius .18s ease;
+        transition:none;
       }
       .card.expanded .cardSurface, .card.collapsing .cardSurface {
         border-radius:22px;
@@ -234,11 +255,10 @@
          directional flow rather than full-border colour flashing. */
       .selectedRim {
         position:absolute; inset:-1px; border-radius:inherit; padding:2px; pointer-events:none; z-index:24;
-        opacity:0; overflow:hidden;
+        opacity:0; overflow:hidden; transition:opacity .12s ease;
         -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
         -webkit-mask-composite:xor; mask-composite:exclude;
-        filter:drop-shadow(0 0 2.4px rgba(155,181,224,.18)) drop-shadow(0 0 4.5px rgba(214,159,201,.075));
-        transform:translateZ(0);
+        filter:none; transform:none;
       }
       .card.selected .selectedRim { opacity:1; }
       /* Selection feedback: keep the grid footprint unchanged while the visible card
@@ -263,9 +283,19 @@
         );
         transform:translate3d(-50%,-50%,0) rotate(0deg);
         transform-origin:50% 50%;
-        animation:selectedRimOrbit 4.1s linear infinite;
-        will-change:transform; backface-visibility:hidden;
+        backface-visibility:hidden;
       }
+      .card.selected.motionVisible:not(.morphing):not(.expanded):not(.collapsing) .selectedRim::before {
+        animation:selectedRimOrbit 4.1s linear infinite;
+        will-change:transform;
+      }
+      .card.selected.motionVisible:not(.morphing):not(.expanded):not(.collapsing) .selectedRim {
+        filter:drop-shadow(0 0 2.4px rgba(155,181,224,.18)) drop-shadow(0 0 4.5px rgba(214,159,201,.075));
+        transform:translateZ(0);
+      }
+      .card.selected.morphing .selectedRim,
+      .card.selected.expanded .selectedRim,
+      .card.selected.collapsing .selectedRim { opacity:0; }
       @keyframes selectedRimOrbit {
         from { transform:translate3d(-50%,-50%,0) rotate(0deg); }
         to   { transform:translate3d(-50%,-50%,0) rotate(360deg); }
@@ -279,7 +309,7 @@
           0 0 13px rgba(205,156,193,.05);
       }
       @media (prefers-color-scheme: dark) {
-        .selectedRim {
+        .card.selected.motionVisible:not(.morphing):not(.expanded):not(.collapsing) .selectedRim {
           filter:drop-shadow(0 0 2.6px rgba(166,192,238,.20)) drop-shadow(0 0 5px rgba(222,168,207,.085));
         }
         .selectedRim::before {
@@ -327,7 +357,7 @@
         border-color:rgba(48,48,54,.40);
         box-shadow:0 10px 28px rgba(0,0,0,.08), inset 0 0 0 1px rgba(255,255,255,.52);
       }
-      .card.loaded:not(.expanded):not(.morphing):not(.collapsing) .cardSurface:hover::after { opacity:.94; filter:contrast(1.08); }
+      .card.loaded:not(.expanded):not(.morphing):not(.collapsing) .cardSurface:hover::after { opacity:.94; }
       .card.unloaded .cardSurface {
         border-color:rgba(108,108,112,.13);
         box-shadow:0 3px 14px rgba(0,0,0,.028);
@@ -337,11 +367,7 @@
       }
       .card.contentLoading .cardSurface {
         border-color:rgba(92,92,98,.34);
-        animation:loadingEdgePulse 1.05s ease-in-out infinite alternate;
-      }
-      @keyframes loadingEdgePulse {
-        from { box-shadow:0 3px 14px rgba(0,0,0,.025) }
-        to { box-shadow:0 8px 26px rgba(0,0,0,.075), inset 0 0 0 1px rgba(127,127,127,.12) }
+        box-shadow:0 5px 20px rgba(0,0,0,.055), inset 0 0 0 1px rgba(127,127,127,.10);
       }
       @media (prefers-color-scheme: dark) {
         .card.loaded .cardSurface {
@@ -361,8 +387,8 @@
       }
 
       /* Selected state wins over loaded/unloaded/hover rules declared above. */
-      .card.selected.loaded .cardSurface,
-      .card.selected.unloaded .cardSurface,
+      .card.selected.loaded:not(.expanded):not(.morphing):not(.collapsing) .cardSurface,
+      .card.selected.unloaded:not(.expanded):not(.morphing):not(.collapsing) .cardSurface,
       .card.selected.loaded:not(.expanded):not(.morphing):not(.collapsing) .cardSurface:hover,
       .card.selected.unloaded:not(.expanded):not(.morphing):not(.collapsing) .cardSurface:hover {
         border-color:rgba(112,118,132,.42);
@@ -373,8 +399,8 @@
           0 0 14px rgba(196,150,184,.055);
       }
       @media (prefers-color-scheme: dark) {
-        .card.selected.loaded .cardSurface,
-        .card.selected.unloaded .cardSurface,
+        .card.selected.loaded:not(.expanded):not(.morphing):not(.collapsing) .cardSurface,
+        .card.selected.unloaded:not(.expanded):not(.morphing):not(.collapsing) .cardSurface,
         .card.selected.loaded:not(.expanded):not(.morphing):not(.collapsing) .cardSurface:hover,
         .card.selected.unloaded:not(.expanded):not(.morphing):not(.collapsing) .cardSurface:hover {
           border-color:rgba(255,255,255,.30);
@@ -386,12 +412,22 @@
         }
       }
 
+      /* Morph state wins over loaded/selected paint-heavy decoration. The shell is painted
+         once, then the compositor only has transform pixels to move. */
+      .card.morphing .cardSurface,
+      .card.expanded .cardSurface,
+      .card.collapsing .cardSurface {
+        border-color:rgba(127,127,127,.30);
+        box-shadow:0 30px 90px rgba(0,0,0,.34), 0 0 0 1px rgba(127,127,127,.14);
+      }
+      .card.morphing .cardSurface::after,
+      .card.expanded .cardSurface::after,
+      .card.collapsing .cardSurface::after { opacity:0 !important; filter:none !important; }
+
       .focusVeil {
         position:absolute; left:0; right:0; top:76px; bottom:64px; z-index:20;
         opacity:0; pointer-events:none;
-        background:rgba(20,20,22,.025);
-        backdrop-filter: blur(.8px) saturate(.98);
-        -webkit-backdrop-filter: blur(.8px) saturate(.98);
+        background:rgba(20,20,22,.045);
         transition:opacity .16s ease;
       }
       .panel.hasExpanded .focusVeil { opacity:1; pointer-events:auto; }
@@ -500,8 +536,10 @@
       }
       .listSentinel.show { height:42px; opacity:.58; transform:translateY(0); }
       .listDots { display:flex; gap:3px; align-items:center; }
-      .listDots i { width:4px; height:4px; border-radius:50%; background:currentColor; opacity:.35; animation:listDot .9s ease-in-out infinite alternate; }
-      .listDots i:nth-child(2) { animation-delay:.14s; } .listDots i:nth-child(3) { animation-delay:.28s; }
+      .listDots i { width:4px; height:4px; border-radius:50%; background:currentColor; opacity:.35; }
+      .listSentinel.show .listDots i { animation:listDot .9s ease-in-out infinite alternate; }
+      .listSentinel.show .listDots i:nth-child(2) { animation-delay:.14s; }
+      .listSentinel.show .listDots i:nth-child(3) { animation-delay:.28s; }
       @keyframes listDot { to { transform:translateY(-3px); opacity:.9 } }
 
       .footer { min-height:64px; padding:11px 16px; border-top:1px solid rgba(127,127,127,.18); display:flex; align-items:center; gap:9px; flex-wrap:wrap; overflow:visible; }
@@ -601,10 +639,6 @@
          collapse offset. With the panel no longer a transformed containing block, the
          original GPU FLIP path is both exact and substantially smoother. */
       .card.collapsing .cardHead { pointer-events:none; }
-      .card.compactRevealing .preview,
-      .card.compactRevealing .loadingPreview,
-      .card.compactRevealing .waitingPreview,
-      .card.compactRevealing .compactMedia { opacity:0 !important; }
       .msg { white-space:normal; }
       .msgBody { line-height:1.58; }
       .md > :first-child { margin-top:0 !important; }
@@ -672,6 +706,13 @@
         border-top-color:rgba(255,255,255,.88); animation:spin .8s linear infinite; pointer-events:none;
       }
       .imageViewer.loaded .imageViewerLoader { display:none; }
+      .imageViewerClose {
+        position:absolute; right:-12px; top:-12px; z-index:2; width:38px; height:38px; border:0; border-radius:12px;
+        display:grid; place-items:center; color:#f5f5f6; background:rgba(20,20,23,.78); cursor:pointer;
+        font-size:20px; line-height:1; box-shadow:0 8px 28px rgba(0,0,0,.28);
+        transition:background .16s ease, transform .18s cubic-bezier(.16,1,.3,1);
+      }
+      .imageViewerClose:hover { background:rgba(42,42,46,.92); transform:translateY(-1px); }
       .imageViewerHint {
         position:absolute; left:50%; bottom:18px; transform:translateX(-50%); padding:7px 11px; border-radius:999px;
         background:rgba(20,20,23,.55); color:rgba(255,255,255,.78); font-size:11px; line-height:1;
@@ -788,26 +829,52 @@
         58% { opacity:calc(var(--a) * .72); }
         100% { opacity:0; transform:translate3d(var(--dx),var(--dy),0) rotate(var(--rot)) scale(.08); }
       }
-      @media (prefers-reduced-motion: reduce) {
-        .card.deletingPowder .cardSurface { animation:fadeDelete .22s ease forwards; }
-        .deleteDustLayer { display:none; }
-        @keyframes fadeDelete { to { opacity:0; } }
+      @media (max-width: 820px) {
+        .panel { inset:8px; min-width:0; border-radius:18px; }
+        .topbar { min-height:0; display:grid; grid-template-columns:minmax(0,1fr) auto auto auto; gap:9px; padding:11px; }
+        .brand { min-width:0; }
+        .brand span { display:none; }
+        .search { grid-column:1 / -1; grid-row:2; width:100%; }
+        .content { padding:10px; }
+        .grid { grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:10px; }
+        .footer { min-height:58px; padding:8px 10px; flex-wrap:wrap; overflow:visible; }
+        .stats { display:none; }
+        .loadGroup { flex:1 1 100%; min-width:0; }
+        .loadCombo { flex:1 1 auto; min-width:190px; }
+        .toolbarSep { display:none; }
+        .progress { order:10; flex:1 1 100%; min-width:0; text-align:left; }
+        .expandedBody { grid-template-columns:1fr; grid-template-rows:minmax(90px,.7fr) minmax(0,1.3fr); }
+        .countMenu { max-height:clamp(150px, calc(100dvh - 240px), 422px); overflow-y:auto; overscroll-behavior:contain; }
+        .speedMenu { display:none; position:static; width:100%; margin-top:4px; transform:none; opacity:1; visibility:visible; box-shadow:none; backdrop-filter:none; -webkit-backdrop-filter:none; }
+        .speedEntry.open .speedMenu { display:block; transform:none; opacity:1; visibility:visible; }
+      }
+      @media (max-width: 540px) {
+        .panel { inset:0; border-radius:0; border:0; }
+        .topbar { grid-template-columns:minmax(0,1fr) auto auto auto; }
+        .modeToggle { width:40px; padding:0; justify-content:center; }
+        .modeToggle .modeLabel { display:none; }
+        .grid { grid-template-columns:1fr; }
+        .footer { padding:8px 10px; }
+        .expandedBody { padding-inline:10px; }
+        .launcher[aria-expanded="true"] { opacity:0; pointer-events:none; }
+        .countMenu { left:0; right:auto; width:min(244px, calc(100vw - 20px)); transform-origin:15% 100%; }
       }
 
     </style>
-    <button class="launcher" title="ChatGPT 对话卡片管理器" aria-label="打开对话管理器"><span class="gridIcon"><i></i><i></i><i></i><i></i></span></button>
-    <div class="overlay">
-      <section class="panel">
+    <button class="launcher" title="ChatGPT 对话卡片管理器" aria-label="打开对话管理器" aria-controls="chatdeck-panel" aria-expanded="false"><span class="gridIcon"><i></i><i></i><i></i><i></i></span></button>
+    <div class="overlay" aria-hidden="true">
+      <section class="panel" id="chatdeck-panel" role="dialog" aria-modal="true" aria-label="ChatGPT 对话卡片管理器" tabindex="-1">
         <header class="topbar">
           <div class="brand"><b>Chat Deck</b><span>分批读取 · 本地缓存 · 手动按需加载</span></div>
-          <input class="search" placeholder="搜索已加载的标题或正文…" />
+          <input class="search" type="search" aria-label="搜索已加载的标题或正文" placeholder="搜索已加载的标题或正文…" />
           <button class="modeToggle" data-act="toggleAutoExpand" type="button" aria-pressed="true" title="切换卡片展开方式"><span class="modeLabel">自动展开</span><span class="modeSwitch" aria-hidden="true"></span></button>
           <button class="btn" data-act="selectVisible">全选</button>
           <button class="btn close" data-act="close" title="关闭">×</button>
         </header>
-        <div class="rateBanner" role="alert" aria-live="assertive">
+        <div class="rateBanner">
           <div class="rateInner"><div class="rateIcon">!</div><div class="rateCopy"><b>请求过多，请稍后再试</b><span class="rateDetail">ChatGPT 暂时限制了请求。本地已缓存内容仍可正常浏览。</span></div></div>
         </div>
+        <span class="srOnly rateAnnouncement" role="status" aria-live="polite"></span>
         <main class="content"><div class="grid"></div><div class="listSentinel" aria-live="polite"><span class="listDots"><i></i><i></i><i></i></span><span>正在继续加载卡片列表…</span></div></main>
         <div class="focusVeil"></div>
         <footer class="footer">
@@ -841,9 +908,9 @@
           <div class="toolbarSep"></div>
           <button class="btn" data-act="archive">归档所选</button>
           <button class="btn danger" data-act="delete">删除所选</button>
-          <div class="progress"></div>
+          <div class="progress" role="status" aria-live="polite"></div>
         </footer>
-        <div class="confirmVeil" role="dialog" aria-modal="true" aria-labelledby="fastWarnTitle">
+        <div class="confirmVeil" role="dialog" aria-modal="true" aria-labelledby="fastWarnTitle" aria-hidden="true">
           <div class="confirmBox"><div class="confirmIcon">!</div><h3 id="fastWarnTitle">快速加载可能触发官方限流</h3>
             <p>快速模式会明显缩短对话详情请求间隔。ChatGPT 的网页内部接口没有公开固定限额，短时间请求过多可能返回 429。扩展仍会保留最低间隔和 429 熔断保护。</p>
             <div class="confirmActions"><button class="btn" data-act="cancelFast" type="button">取消</button><button class="btn warn" data-act="confirmFast" type="button">仍然选择快速</button></div>
@@ -856,12 +923,13 @@
           </div>
           <div class="deletePopoverActions"><button class="btn" data-act="cancelDelete" type="button">取消</button><button class="btn deleteConfirm" data-act="confirmDelete" type="button">删除</button></div>
         </div>
-        <div class="toast"></div>
+        <div class="toast" role="status" aria-live="polite"></div>
       </section>
       <div class="imageViewer" role="dialog" aria-modal="true" aria-label="图片预览" aria-hidden="true">
         <div class="imageViewerFrame">
           <div class="imageViewerLoader" aria-hidden="true"></div>
           <img class="imageViewerImage" alt="对话图片预览">
+          <button class="imageViewerClose" data-act="closeImageViewer" type="button" aria-label="关闭图片预览">×</button>
         </div>
         <div class="imageViewerHint">点击图片外任意位置关闭 · Esc</div>
       </div>
@@ -885,6 +953,7 @@
   const countToggle = $('[data-act="toggleCountMenu"]');
   const countMenu = $('.countMenu');
   const speedEntry = $('.speedEntry');
+  const speedMenu = $('.speedMenu');
   const speedCurrent = $('.speedCurrent');
   const loadSpeedMeta = $('.loadSpeedMeta');
   const confirmVeil = $('.confirmVeil');
@@ -893,14 +962,57 @@
   const listSentinel = $('.listSentinel');
   const rateBanner = $('.rateBanner');
   const rateDetail = $('.rateDetail');
+  const rateAnnouncement = $('.rateAnnouncement');
   const archiveBtn = $('[data-act="archive"]');
   const deleteBtn = $('[data-act="delete"]');
+  const selectVisibleBtn = $('[data-act="selectVisible"]');
   const autoExpandBtn = $('[data-act="toggleAutoExpand"]');
   const imageViewer = $('.imageViewer');
   const imageViewerImage = $('.imageViewerImage');
+  const imageViewerClose = $('.imageViewerClose');
+
+  function focusableElements(container) {
+    if (!container) return [];
+    return [...container.querySelectorAll('button:not(:disabled), input:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])')]
+      .filter(element => element.getClientRects().length && getComputedStyle(element).visibility !== 'hidden');
+  }
+
+  function currentModalScope() {
+    if (state.imageViewerOpen) return imageViewer;
+    if (state.fastWarningOpen) return confirmVeil;
+    if (state.opened) return panel;
+    return null;
+  }
+
+  function trapModalTab(event) {
+    if (event.key !== 'Tab') return false;
+    const scope = currentModalScope();
+    const focusables = focusableElements(scope);
+    if (!scope || !focusables.length) return false;
+    const active = root.activeElement;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (!scope.contains(active)) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus({ preventScroll:true });
+      return true;
+    }
+    if (event.shiftKey && active === first) {
+      event.preventDefault();
+      last.focus({ preventScroll:true });
+      return true;
+    }
+    if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first.focus({ preventScroll:true });
+      return true;
+    }
+    return false;
+  }
 
   function openImageViewer(url, alt = '对话图片预览') {
     if (!imageViewer || !imageViewerImage || !url) return;
+    state.imageViewerLastFocus = root.activeElement;
     state.imageViewerOpen = true;
     imageViewer.classList.remove('loaded');
     imageViewer.classList.add('show');
@@ -910,6 +1022,7 @@
     imageViewerImage.removeAttribute('src');
     requestAnimationFrame(() => {
       imageViewerImage.src = url;
+      imageViewerClose?.focus({ preventScroll:true });
     });
   }
 
@@ -920,6 +1033,9 @@
     imageViewer.setAttribute('aria-hidden', 'true');
     imageViewerImage.classList.remove('loaded');
     imageViewerImage.removeAttribute('src');
+    const restore = state.imageViewerLastFocus;
+    state.imageViewerLastFocus = null;
+    if (restore?.isConnected) restore.focus({ preventScroll:true });
   }
 
   imageViewerImage?.addEventListener('load', () => {
@@ -942,6 +1058,7 @@
 
   function closeDeletePopover() {
     if (!deletePopover) return;
+    const restore = state.deletePopoverOpen ? state.deleteAnchor : null;
     state.deletePopoverOpen = false;
     state.deletePopoverIds = [];
     state.deleteAnchor = null;
@@ -950,6 +1067,7 @@
     deletePopover.style.removeProperty('left');
     deletePopover.style.removeProperty('top');
     deletePopover.style.removeProperty('transform-origin');
+    if (restore?.isConnected) requestAnimationFrame(() => restore.focus({ preventScroll:true }));
   }
 
   function openDeletePopover(anchor, ids) {
@@ -994,7 +1112,10 @@
     void deletePopover.offsetWidth;
     deletePopover.style.removeProperty('visibility');
     deletePopover.style.removeProperty('pointer-events');
-    requestAnimationFrame(() => deletePopover.classList.add('show'));
+    requestAnimationFrame(() => {
+      deletePopover.classList.add('show');
+      requestAnimationFrame(() => deletePopover.querySelector('[data-act="cancelDelete"]')?.focus({ preventScroll:true }));
+    });
   }
 
   function setDeletePending(ids, pending) {
@@ -1066,11 +1187,20 @@
 
   function updateAutoExpandUI() {
     if (!autoExpandBtn) return;
+    const hoverCapable = preciseHoverQuery.matches;
     autoExpandBtn.classList.toggle('active', state.autoExpand);
     autoExpandBtn.setAttribute('aria-pressed', state.autoExpand ? 'true' : 'false');
-    autoExpandBtn.title = state.autoExpand
+    const label = autoExpandBtn.querySelector('.modeLabel');
+    if (label) label.textContent = state.autoExpand && hoverCapable ? '自动展开' : '点击展开';
+    autoExpandBtn.title = state.autoExpand && hoverCapable
       ? '自动展开已开启：悬停 0.5 秒展开，移出后收起'
+      : state.autoExpand
+        ? '当前设备不支持精确悬停，已自动改用点击展开'
       : '自动展开已关闭：点击卡片展开，点击卡片外区域收起';
+  }
+
+  function effectiveAutoExpand() {
+    return state.autoExpand && preciseHoverQuery.matches;
   }
 
   function setAutoExpand(enabled) {
@@ -1079,7 +1209,9 @@
     clearTimeout(state.hoverTimer);
     clearTimeout(state.collapseTimer);
     updateAutoExpandUI();
-    showToast(state.autoExpand ? '自动展开已开启' : '已切换为点击展开');
+    showToast(state.autoExpand
+      ? (preciseHoverQuery.matches ? '自动展开已开启' : '当前设备使用点击展开')
+      : '已切换为点击展开');
   }
 
   function openConversationTab(id) {
@@ -1107,16 +1239,18 @@
   async function setPanelOpen(open) {
     if (state.panelAnimating || (!!open === state.opened && !state.panelAnimating)) return;
     state.panelAnimating = true;
-    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
     if (open) {
+      state.lastFocusedElement = root.activeElement || document.activeElement;
       state.opened = true;
       overlay.classList.add('open');
-      updateRateBanner();
+      overlay.setAttribute('aria-hidden', 'false');
+      launcher.setAttribute('aria-expanded', 'true');
+      startRateBannerTimer();
       const origin = panelLauncherOrigin();
       panel.style.transformOrigin = `${origin.x}px ${origin.y}px`;
       panel.style.willChange = 'transform, opacity';
-      if (!reduced && typeof panel.animate === 'function') {
+      if (typeof panel.animate === 'function') {
         const panelAnim = panel.animate([
           { transform:`translate3d(0,0,0) scale(${origin.scale})`, opacity:.12 },
           { transform:'translate3d(0,0,0) scale(1)', opacity:1 }
@@ -1131,18 +1265,23 @@
       state.panelAnimating = false;
       if (!state.chats.length) loadNextBatch();
       scheduleIdlePrefetch();
+      pumpQueue();
+      search.focus({ preventScroll:true });
       return;
     }
 
+    stopIdlePrefetch();
+    stopRateBannerTimer();
     closeDeletePopover();
     closeImageViewer();
+    if (state.fastWarningOpen) closeFastWarning(false);
     collapseExpanded(true);
     setCountMenu(false);
     setSpeedMenu(false);
     const origin = panelLauncherOrigin();
     panel.style.transformOrigin = `${origin.x}px ${origin.y}px`;
     panel.style.willChange = 'transform, opacity';
-    if (!reduced && typeof panel.animate === 'function') {
+    if (typeof panel.animate === 'function') {
       const panelAnim = panel.animate([
         { transform:'translate3d(0,0,0) scale(1)', opacity:1 },
         { transform:`translate3d(0,0,0) scale(${origin.scale})`, opacity:.08 }
@@ -1153,10 +1292,16 @@
     }
     state.opened = false;
     overlay.classList.remove('open');
+    overlay.setAttribute('aria-hidden', 'true');
+    launcher.setAttribute('aria-expanded', 'false');
     panel.style.removeProperty('transform');
     panel.style.opacity = '1';
     panel.style.removeProperty('will-change');
     state.panelAnimating = false;
+    const restore = state.lastFocusedElement;
+    state.lastFocusedElement = null;
+    if (restore?.isConnected) restore.focus({ preventScroll:true });
+    else launcher.focus({ preventScroll:true });
   }
 
   function markUserActivity() {
@@ -1183,8 +1328,14 @@
   }
 
   function scheduleIdlePrefetch() {
-    if (state.idlePrefetchTimer) return;
+    if (state.idlePrefetchTimer || !state.opened || document.hidden) return;
     state.idlePrefetchTimer = setInterval(maybeIdlePrefetch, IDLE_PREFETCH_TICK_MS);
+  }
+
+  function stopIdlePrefetch() {
+    if (!state.idlePrefetchTimer) return;
+    clearInterval(state.idlePrefetchTimer);
+    state.idlePrefetchTimer = null;
   }
 
   async function getToken() {
@@ -1240,16 +1391,22 @@
     return state.createdTimes.get(chat?.id) || getListCreatedAt(chat) || 0;
   }
 
+  const dateFormatters = {
+    detailed: new Intl.DateTimeFormat('zh-CN', { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit' }),
+    currentYear: new Intl.DateTimeFormat('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }),
+    otherYear: new Intl.DateTimeFormat('zh-CN', { year:'2-digit', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }),
+    time: new Intl.DateTimeFormat('zh-CN', { hour:'2-digit', minute:'2-digit' }),
+  };
+  const digestCache = new WeakMap();
+
   function formatDateMs(ms, detailed = false) {
     if (!ms) return detailed ? '时间暂未返回' : '时间读取中…';
     const d = new Date(ms);
     if (Number.isNaN(+d)) return detailed ? '时间暂未返回' : '时间读取中…';
     const now = new Date();
     const sameYear = d.getFullYear() === now.getFullYear();
-    const options = detailed
-      ? { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit' }
-      : { ...(sameYear ? {} : { year:'2-digit' }), month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' };
-    return new Intl.DateTimeFormat('zh-CN', options).format(d);
+    const formatter = detailed ? dateFormatters.detailed : (sameYear ? dateFormatters.currentYear : dateFormatters.otherYear);
+    return formatter.format(d);
   }
 
   function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
@@ -1297,14 +1454,33 @@
     const shared = sharedNumber('chatdeck:rateLimitUntil');
     state.rateLimitUntil = Math.max(state.rateLimitUntil, shared);
     const remain = state.rateLimitUntil - Date.now();
+    const wasCooling = rateBanner.classList.contains('show');
     if (remain > 0) {
       rateBanner.classList.add('show');
       rateDetail.textContent = `ChatGPT 暂时限制了请求，冷却剩余约 ${formatCooldown(remain)}。已暂停批量/自动请求，本地缓存仍可正常浏览；冷却结束后请重新点击加载。`;
+      if (!wasCooling && rateAnnouncement) rateAnnouncement.textContent = 'ChatGPT 请求已进入冷却，批量和自动请求已暂停。';
     } else {
       rateBanner.classList.remove('show');
       rateDetail.textContent = 'ChatGPT 暂时限制了请求。本地已缓存内容仍可正常浏览。';
+      if (wasCooling && rateAnnouncement) rateAnnouncement.textContent = 'ChatGPT 请求冷却已结束，可以继续加载。';
     }
     if (typeof updateStats === 'function') updateStats();
+  }
+
+  let rateBannerTimer = null;
+  function startRateBannerTimer() {
+    if (rateBannerTimer) return;
+    updateRateBanner();
+    rateBannerTimer = setInterval(() => {
+      const cooling = Date.now() < Math.max(state.rateLimitUntil, sharedNumber('chatdeck:rateLimitUntil'));
+      if (cooling || rateBanner.classList.contains('show')) updateRateBanner();
+    }, 1000);
+  }
+
+  function stopRateBannerTimer() {
+    if (!rateBannerTimer) return;
+    clearInterval(rateBannerTimer);
+    rateBannerTimer = null;
   }
 
   function abortManualBatchForRateLimit() {
@@ -1428,7 +1604,7 @@
     const db = await openCacheDb();
     if (!db || !parsed?.messages) return;
     const value = {
-      id, messages: parsed.messages, mediaSchema:2, createdAt: parsed.createdAt || getListCreatedAt(chat) || 0,
+      id, messages: parsed.messages, mediaSchema:2, parserSchema:PARSER_SCHEMA, createdAt: parsed.createdAt || getListCreatedAt(chat) || 0,
       listUpdatedAt: getListUpdatedAt(chat), cachedAt: Date.now()
     };
     return new Promise(resolve => {
@@ -1455,7 +1631,7 @@
   }
 
   function cacheIsFresh(cached, chat) {
-    if (!cached?.messages?.length) return false;
+    if (!cached?.messages?.length || cached.parserSchema !== PARSER_SCHEMA) return false;
     const listUpdatedAt = getListUpdatedAt(chat);
     if (listUpdatedAt && cached.listUpdatedAt) return cached.listUpdatedAt + 1000 >= listUpdatedAt;
     return Date.now() - Number(cached.cachedAt || 0) <= CACHE_SOFT_TTL_MS;
@@ -1478,7 +1654,7 @@
     updateStats();
   }
 
-  async function loadNextBatch(requestedLimit = BATCH_SIZE) {
+  async function loadNextBatch(requestedLimit = BATCH_SIZE, { renderAfter = true } = {}) {
     if (state.loadingList || (state.offset >= state.total && state.total !== 0)) return;
     state.loadingList = true;
     loadMoreBtn.disabled = true;
@@ -1504,8 +1680,10 @@
       state.total = Number.isFinite(data?.total) ? data.total : Math.max(state.total, state.chats.length);
       state.offset += items.length;
       loadedCount = items.length;
-      render();
-      observeCards();
+      if (renderAfter) {
+        render();
+        observeCards();
+      }
       hydrateBatchFromCache(items).catch(() => {});
     } catch (err) {
       console.error('[Chat Deck]', err);
@@ -1517,19 +1695,6 @@
       loadMoreBtn.textContent = state.offset >= state.total && state.total ? '已全部加载' : '加载更多对话卡片';
       updateStats();
       return loadedCount;
-    }
-  }
-
-  async function ensureListCount(target) {
-    const wantAll = target === Infinity;
-    let guard = 0;
-    while (guard++ < 200) {
-      if (!wantAll && state.chats.length >= target) break;
-      if (state.total && state.offset >= state.total) break;
-      const remaining = wantAll ? LIST_FETCH_MAX : Math.max(1, target - state.chats.length);
-      const before = state.offset;
-      const got = await loadNextBatch(Math.min(LIST_FETCH_MAX, remaining));
-      if (!got || state.offset <= before) break;
     }
   }
 
@@ -1596,11 +1761,32 @@
     return s;
   }
 
+  function activeConversationNodes(data) {
+    const mapping = data?.mapping;
+    if (!mapping || typeof mapping !== 'object') return [];
+    const currentId = String(data?.current_node ?? data?.currentNode ?? '');
+    if (!currentId || !mapping[currentId]) return Object.values(mapping);
+
+    const branch = [];
+    const seen = new Set();
+    let id = currentId;
+    while (id && mapping[id] && !seen.has(id)) {
+      seen.add(id);
+      const node = mapping[id];
+      branch.push(node);
+      id = String(node?.parent || '');
+    }
+    return branch.reverse();
+  }
+
   function parseConversation(data) {
     const mapping = data?.mapping || {};
     const messages = [];
     let seq = 0;
-    for (const node of Object.values(mapping)) {
+    const currentId = String(data?.current_node ?? data?.currentNode ?? '');
+    const hasActiveBranch = !!(currentId && mapping[currentId]);
+    const nodes = activeConversationNodes(data);
+    for (const node of nodes.length ? nodes : Object.values(mapping)) {
       const m = node?.message;
       const rawRole = m?.author?.role;
       if (!m || !['user', 'assistant', 'tool'].includes(rawRole)) continue;
@@ -1629,12 +1815,16 @@
       const role = rawRole === 'tool' ? 'assistant' : rawRole;
       messages.push({ role, text, images:dedup, time: normalizeTimestamp(m.create_time ?? m.createTime), seq: seq++ });
     }
-    messages.sort((a,b) => {
-      if (a.time && b.time) return a.time - b.time;
-      if (a.time) return -1;
-      if (b.time) return 1;
-      return a.seq - b.seq;
-    });
+    // The parent chain already is the source-of-truth order. Sorting it by timestamps can
+    // reorder messages when clocks are missing, equal, or slightly non-monotonic.
+    if (!hasActiveBranch) {
+      messages.sort((a,b) => {
+        if (a.time && b.time) return a.time - b.time;
+        if (a.time) return -1;
+        if (b.time) return 1;
+        return a.seq - b.seq;
+      });
+    }
     const explicitCreated = normalizeTimestamp(
       data?.create_time ?? data?.createTime ?? data?.created_at ?? data?.createdAt ?? data?.creation_time
     );
@@ -1644,6 +1834,14 @@
 
   function imageKey(img) {
     return String(img?.fileId || img?.sedimentId || img?.assetPointer || img?.url || '');
+  }
+
+  function isLiveExpandedCard(card, conversationId) {
+    return !!(card?.isConnected
+      && state.opened
+      && state.expandedId === conversationId
+      && card.classList.contains('expanded')
+      && !card.classList.contains('collapsing'));
   }
 
   async function resolveImageUrl(img, conversationId) {
@@ -1685,16 +1883,19 @@
   async function hydrateMediaForCard(conversationId, limit = 8) {
     const card = grid.querySelector(`.card[data-id="${CSS.escape(conversationId)}"]`);
     const msgs = state.details.get(conversationId);
-    if (!card || !msgs) return;
+    if (!isLiveExpandedCard(card, conversationId) || !msgs) return;
     const tiles = [...card.querySelectorAll('.mediaTile[data-msg-index][data-image-index]')].slice(0, limit);
     let firstUrl = '';
+    let attempts = 0;
     for (const tile of tiles) {
-      if (!card.isConnected) break;
+      if (!isLiveExpandedCard(card, conversationId) || attempts >= limit) break;
       const mi = Number(tile.dataset.msgIndex);
       const ii = Number(tile.dataset.imageIndex);
       const img = msgs?.[mi]?.images?.[ii];
       if (!img) { tile.classList.add('failed'); continue; }
+      attempts += 1;
       const url = await resolveImageUrl(img, conversationId);
+      if (!isLiveExpandedCard(card, conversationId) || !tile.isConnected) return;
       if (!url) { tile.classList.add('failed'); continue; }
       firstUrl ||= url;
       const image = tile.querySelector('img');
@@ -1704,11 +1905,17 @@
         image.src = url;
       }
       tile.dataset.url = url;
+      tile.tabIndex = 0;
+      tile.setAttribute('role', 'button');
+      tile.setAttribute('aria-label', img.alt ? `查看图片：${img.alt}` : '查看对话图片');
       tile.title = '点击查看原图';
     }
-    if (!firstUrl) {
+    if (!firstUrl && attempts < limit && isLiveExpandedCard(card, conversationId)) {
       outer: for (const m of msgs) for (const img of (m.images || [])) {
+        if (!isLiveExpandedCard(card, conversationId) || attempts >= limit) break outer;
+        attempts += 1;
         firstUrl = await resolveImageUrl(img, conversationId);
+        if (!isLiveExpandedCard(card, conversationId)) return;
         if (firstUrl) break outer;
       }
     }
@@ -1718,6 +1925,9 @@
       if (compact && image) {
         compact.classList.add('show');
         compact.dataset.url = firstUrl;
+        compact.tabIndex = 0;
+        compact.setAttribute('role', 'button');
+        compact.setAttribute('aria-label', '查看对话图片缩略图');
         image.addEventListener('load', () => compact.classList.add('loaded'), { once:true });
         image.src = firstUrl;
       }
@@ -1727,6 +1937,11 @@
   function updateCardLoadState(chatId) {
     const card = grid.querySelector(`.card[data-id="${CSS.escape(chatId)}"]`);
     if (!card) return;
+    if (cardVisualUpdateBlocked(card)) {
+      state.pendingCardUpdates.add(chatId);
+      return;
+    }
+    state.pendingCardUpdates.delete(chatId);
     const count = card.querySelector('.count');
     const surface = card.querySelector('.cardSurface');
     const msgs = state.details.get(chatId);
@@ -1954,14 +2169,17 @@
   async function ensureUnloadedCount(target) {
     const wantAll = target === Infinity;
     let guard = 0;
+    let changed = false;
     while (guard++ < 200) {
       const candidates = filteredChats().filter(isUnloadedCandidate);
       if (!wantAll && candidates.length >= target) break;
       if (state.total && state.offset >= state.total) break;
       const before = state.offset;
-      const got = await loadNextBatch(LIST_FETCH_MAX);
+      const got = await loadNextBatch(LIST_FETCH_MAX, { renderAfter:false });
+      changed ||= got > 0;
       if (!got || state.offset <= before) break;
     }
+    if (changed) { render(); observeCards(); }
   }
 
   function setCountChoice(value) {
@@ -1985,6 +2203,9 @@
   function setSpeedMenu(open) {
     state.speedMenuOpen = !!open;
     speedEntry?.classList.toggle('open', state.speedMenuOpen);
+    if (state.speedMenuOpen && innerWidth <= 820) {
+      requestAnimationFrame(() => speedMenu?.scrollIntoView({ block:'nearest', inline:'nearest' }));
+    }
   }
 
   function setCountMenu(open) {
@@ -1994,6 +2215,16 @@
     if (!state.countMenuOpen) setSpeedMenu(false);
   }
 
+  function openFastWarning({ choice = false, load = false } = {}) {
+    state.pendingFastChoice = choice;
+    state.pendingFastLoad = load;
+    state.fastWarningLastFocus = root.activeElement;
+    state.fastWarningOpen = true;
+    confirmVeil.setAttribute('aria-hidden', 'false');
+    confirmVeil.classList.add('show');
+    requestAnimationFrame(() => confirmVeil.querySelector('[data-act="cancelFast"]')?.focus({ preventScroll:true }));
+  }
+
   function requestSpeedChoice(value) {
     if (!LOAD_SPEEDS[value]) return;
     if (value !== 'fast') {
@@ -2001,13 +2232,12 @@
       setSpeedMenu(false);
       return;
     }
-    state.pendingFastChoice = true;
-    state.fastWarningOpen = true;
-    confirmVeil.classList.add('show');
+    openFastWarning({ choice:true });
   }
 
   function closeFastWarning(confirmed = false) {
     confirmVeil.classList.remove('show');
+    confirmVeil.setAttribute('aria-hidden', 'true');
     state.fastWarningOpen = false;
     if (confirmed) state.fastConfirmedForSession = true;
     if (confirmed && state.pendingFastChoice) applySpeedChoice('fast');
@@ -2015,15 +2245,16 @@
     state.pendingFastChoice = false;
     state.pendingFastLoad = false;
     if (confirmed) { setSpeedMenu(false); setCountMenu(false); }
+    const restore = state.fastWarningLastFocus;
+    state.fastWarningLastFocus = null;
+    if (restore?.isConnected) restore.focus({ preventScroll:true });
     if (resumeLoad) setTimeout(() => loadCountDetails(), 0);
   }
 
   async function loadCountDetails() {
+    if (state.preparingBatch) return;
     if (state.loadSpeedChoice === 'fast' && !state.fastConfirmedForSession) {
-      state.pendingFastLoad = true;
-      state.pendingFastChoice = true;
-      state.fastWarningOpen = true;
-      confirmVeil.classList.add('show');
+      openFastWarning({ choice:true, load:true });
       return;
     }
     collapseExpanded(true);
@@ -2031,7 +2262,8 @@
     const wantAll = raw === 'all';
     const count = wantAll ? Infinity : Number(raw || 10);
     setCountMenu(false);
-    loadCountBtn.disabled = true;
+    state.preparingBatch = true;
+    updateStats();
     try {
       // Important: N means N conversations whose content is not loaded yet, not the first N cards.
       // If the currently fetched list does not contain enough unloaded cards, fetch more list metadata first.
@@ -2045,6 +2277,7 @@
       const ids = chosen.map(c => c.id);
       await startManualDetailLoad(ids, wantAll ? '读取剩余全部' : `读取接下来的 ${ids.length} 个`);
     } finally {
+      state.preparingBatch = false;
       updateStats();
     }
   }
@@ -2069,7 +2302,7 @@
     const tokens = [];
     const stash = html => `\u0000${tokens.push(html)-1}\u0000`;
     let src = String(text);
-    src = src.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g, (_, alt, url) => stash(`<img class="mdInlineImage" src="${escapeHtml(url)}" alt="${escapeHtml(alt || '图片')}" loading="lazy">`));
+    src = src.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g, (_, alt, url) => stash(`<img class="mdInlineImage" src="${escapeHtml(url)}" alt="${escapeHtml(alt || '图片')}" loading="lazy" referrerpolicy="no-referrer">`));
     src = src.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, label, url) => stash(`<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`));
     src = src.replace(/`([^`\n]+)`/g, (_, code) => stash(`<code>${escapeHtml(code)}</code>`));
     let out = escapeHtml(src);
@@ -2135,6 +2368,7 @@
   }
 
   function buildDigest(msgs) {
+    if (digestCache.has(msgs)) return digestCache.get(msgs);
     const user = msgs.filter(m => m.role === 'user');
     const assistant = msgs.filter(m => m.role === 'assistant');
     const first = user[0]?.text || msgs[0]?.text || '';
@@ -2142,12 +2376,14 @@
     const lastAnswer = assistant[assistant.length - 1]?.text || '';
     const chars = msgs.reduce((n, m) => n + String(m.text || '').length, 0);
     const images = msgs.reduce((n, m) => n + (m.images?.length || 0), 0);
-    return {
+    const digest = {
       first: cleanText(first, 220),
       recent: cleanText(lastUser, 220),
       answer: cleanText(lastAnswer, 260),
       stats: `${user.length} 次提问 · ${assistant.length} 次回复${images ? ` · ${images} 张图片` : ''} · ${chars.toLocaleString('zh-CN')} 字`,
     };
+    digestCache.set(msgs, digest);
+    return digest;
   }
 
   function waitingPreviewHTML(id) {
@@ -2215,32 +2451,39 @@
       const count = msgs ? `${msgs.length} 条消息` : '';
       const metaHidden = msgs ? '' : 'hidden';
       const chipHtml = loadState.cls === 'loading' ? '<i></i><span>读取中</span>' : '';
-      return `<article class="card ${selected ? 'selected' : ''} ${msgs ? 'loaded' : 'unloaded'} ${loadState.cls === 'loading' ? 'contentLoading' : ''}" data-id="${escapeAttr(c.id)}">
+      const title = c.title || '无标题对话';
+      return `<article class="card ${selected ? 'selected' : ''} ${msgs ? 'loaded' : 'unloaded'} ${loadState.cls === 'loading' ? 'contentLoading' : ''}" data-id="${escapeAttr(c.id)}" tabindex="0" aria-expanded="false" aria-label="${escapeAttr(title)}，按回车展开">
         <div class="cardSurface">
           <span class="selectedRim" aria-hidden="true"></span>
           <div class="cardHead">
             <label class="checkWrap" title="选择对话"><input class="check" type="checkbox" ${selected ? 'checked' : ''} aria-label="选择对话" /><span class="checkBox"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 8.2 6.5 11.3 12.9 4.8" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></label>
             <div class="titleWrap">
-              <div class="title" title="双击打开原对话">${escapeAttr(c.title || '无标题对话')}</div>
+              <div class="title" title="双击打开原对话">${escapeAttr(title)}</div>
               <div class="meta"><span class="createdAt" title="${escapeAttr(formatDateMs(createdAt, true))}">${escapeAttr(formatDateMs(createdAt))}</span><span class="metaSep ${metaHidden}">·</span><span class="count ${metaHidden}">${count}</span><span class="contentState ${loadState.cls}">${chipHtml}</span></div>
             </div>
             <div class="cardActions">
-              <button class="mini jump" data-act="openConversation" title="在新标签页打开原对话" aria-label="在新标签页打开原对话"><svg viewBox="0 0 20 20"><path d="M8 4H5.5A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16h9a1.5 1.5 0 0 0 1.5-1.5V12"/><path d="M11 4h5v5M16 4l-7 7"/></svg></button>
-              <button class="mini trash" data-act="singleDelete" title="删除" aria-label="删除对话"><svg viewBox="0 0 20 20"><path d="M4 6h12M8 3.5h4M6.3 6l.55 10h6.3l.55-10M8.4 8.5v5M11.6 8.5v5"/></svg></button>
+              <button class="mini jump" data-act="openConversation" type="button" title="在新标签页打开原对话" aria-label="在新标签页打开原对话"><svg viewBox="0 0 20 20"><path d="M8 4H5.5A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16h9a1.5 1.5 0 0 0 1.5-1.5V12"/><path d="M11 4h5v5M16 4l-7 7"/></svg></button>
+              <button class="mini trash" data-act="singleDelete" type="button" title="删除" aria-label="删除对话"><svg viewBox="0 0 20 20"><path d="M4 6h12M8 3.5h4M6.3 6l.55 10h6.3l.55-10M8.4 8.5v5M11.6 8.5v5"/></svg></button>
             </div>
           </div>
           ${msgs ? previewHTML(msgs) : (state.loadingIds.has(c.id) ? loadingPreviewHTML() : waitingPreviewHTML(c.id))}
-          <div class="compactMedia"><img alt="对话图片缩略图"></div>
+          <div class="compactMedia" role="button" tabindex="-1" aria-label="查看对话图片缩略图"><img alt="对话图片缩略图" referrerpolicy="no-referrer"></div>
           <div class="expandedBody"><div class="digest"></div><div class="messages"></div></div>
           <div class="fade"></div>
         </div>
       </article>`;
     }).join('');
+    state.pendingCardUpdates.clear();
     updateStats();
   }
 
   function clearExpandedDetail(card) {
     if (!card) return;
+    state.expandedRenderGeneration += 1;
+    if (state.expandedRenderFrame != null) {
+      cancelAnimationFrame(state.expandedRenderFrame);
+      state.expandedRenderFrame = null;
+    }
     const digest = card.querySelector('.digest');
     const messages = card.querySelector('.messages');
     if (digest) digest.textContent = '';
@@ -2248,11 +2491,84 @@
     card.dataset.expandedRendered = '';
   }
 
+  function expandedMessageElement(message, msgIndex) {
+    const div = document.createElement('div');
+    div.className = `msg ${message.role}`;
+
+    const role = document.createElement('div');
+    role.className = 'role';
+    const roleName = document.createElement('span');
+    roleName.textContent = message.role === 'user' ? '你' : 'ChatGPT';
+    role.appendChild(roleName);
+    if (message.time) {
+      const time = document.createElement('span');
+      time.textContent = dateFormatters.time.format(new Date(message.time));
+      role.appendChild(time);
+    }
+
+    const body = document.createElement('div');
+    const text = String(message.text || '');
+    body.className = `msgBody md ${text.length > 520 ? 'long' : ''}`;
+    body.innerHTML = text ? markdownToHtml(text) : '<p style="opacity:.45">图片消息</p>';
+    div.append(role, body);
+
+    if (message.images?.length) {
+      const media = document.createElement('div');
+      media.className = 'mediaGrid';
+      message.images.forEach((img, imageIndex) => {
+        const tile = document.createElement('div');
+        tile.className = 'mediaTile';
+        tile.setAttribute('role', 'button');
+        tile.tabIndex = -1;
+        tile.dataset.msgIndex = String(msgIndex);
+        tile.dataset.imageIndex = String(imageIndex);
+        tile.innerHTML = `<span class="imageSkeleton"></span><img alt="${escapeAttr(img.alt || '对话图片')}" loading="lazy" referrerpolicy="no-referrer">`;
+        media.appendChild(tile);
+      });
+      div.appendChild(media);
+    }
+
+    if (text.length > 520) {
+      const toggle = document.createElement('button');
+      toggle.className = 'msgToggle';
+      toggle.dataset.act = 'toggleMsg';
+      toggle.type = 'button';
+      toggle.textContent = '展开这条消息';
+      div.appendChild(toggle);
+    }
+    return div;
+  }
+
+  function appendExpandedMessages(messages, msgs, start, end) {
+    const fragment = document.createDocumentFragment();
+    for (let index = start; index < end; index += 1) {
+      fragment.appendChild(expandedMessageElement(msgs[index], index));
+    }
+    messages.appendChild(fragment);
+  }
+
+  function appendExpandedLimitHint(messages, total, shown) {
+    if (total <= shown) return;
+    const hint = document.createElement('div');
+    hint.className = 'moreHint';
+    hint.textContent = `已显示前 ${shown} 条消息 · 可用右上角跳转按钮打开完整对话`;
+    messages.appendChild(hint);
+  }
+
+  function scheduleExpandedChunk(callback) {
+    if (typeof requestIdleCallback === 'function') {
+      requestIdleCallback(callback, { timeout:120 });
+    } else {
+      setTimeout(callback, 16);
+    }
+  }
+
   function renderExpandedDetail(card, id) {
-    if (!card?.isConnected || card.dataset.expandedRendered === '1') return;
+    if (!isLiveExpandedCard(card, id) || card.dataset.expandedRendered === '1') return;
     const msgs = state.details.get(id);
     if (!msgs) return;
     card.dataset.expandedRendered = '1';
+    const generation = ++state.expandedRenderGeneration;
 
     const d = buildDigest(msgs);
     const digest = card.querySelector('.digest');
@@ -2266,64 +2582,59 @@
     const messages = card.querySelector('.messages');
     if (!messages) return;
     messages.textContent = '';
-    const frag = document.createDocumentFragment();
-    const max = 80;
-    msgs.slice(0, max).forEach((m, msgIndex) => {
-      const div = document.createElement('div');
-      div.className = `msg ${m.role}`;
+    const max = Math.min(MAX_EXPANDED_MESSAGES, msgs.length);
+    let cursor = Math.min(EXPANDED_INITIAL_MESSAGES, max);
+    appendExpandedMessages(messages, msgs, 0, cursor);
 
-      const role = document.createElement('div');
-      role.className = 'role';
-      const roleName = document.createElement('span');
-      roleName.textContent = m.role === 'user' ? '你' : 'ChatGPT';
-      role.appendChild(roleName);
-      if (m.time) {
-        const t = document.createElement('span');
-        t.textContent = new Intl.DateTimeFormat('zh-CN', { hour:'2-digit', minute:'2-digit' }).format(new Date(m.time));
-        role.appendChild(t);
+    const appendNext = () => {
+      if (generation !== state.expandedRenderGeneration || !isLiveExpandedCard(card, id)) return;
+      const end = Math.min(max, cursor + EXPANDED_RENDER_CHUNK);
+      appendExpandedMessages(messages, msgs, cursor, end);
+      cursor = end;
+      if (cursor < max) {
+        scheduleExpandedChunk(appendNext);
+        return;
       }
+      appendExpandedLimitHint(messages, msgs.length, max);
+      hydrateMediaForCard(id).catch(() => {});
+    };
 
-      const body = document.createElement('div');
-      const text = String(m.text || '');
-      body.className = `msgBody md ${text.length > 520 ? 'long' : ''}`;
-      body.innerHTML = text ? markdownToHtml(text) : '<p style="opacity:.45">图片消息</p>';
-      div.append(role, body);
-
-      if (m.images?.length) {
-        const media = document.createElement('div');
-        media.className = 'mediaGrid';
-        m.images.forEach((img, imageIndex) => {
-          const tile = document.createElement('div');
-          tile.className = 'mediaTile';
-          tile.dataset.msgIndex = String(msgIndex);
-          tile.dataset.imageIndex = String(imageIndex);
-          tile.innerHTML = `<span class="imageSkeleton"></span><img alt="${escapeAttr(img.alt || '对话图片')}" loading="lazy">`;
-          media.appendChild(tile);
-        });
-        div.appendChild(media);
-      }
-
-      if (text.length > 520) {
-        const toggle = document.createElement('button');
-        toggle.className = 'msgToggle';
-        toggle.dataset.act = 'toggleMsg';
-        toggle.textContent = '展开这条消息';
-        div.appendChild(toggle);
-      }
-      frag.appendChild(div);
-    });
-    if (msgs.length > max) {
-      const hint = document.createElement('div');
-      hint.className = 'moreHint';
-      hint.textContent = `已显示前 ${max} 条消息 · 可用右上角跳转按钮打开完整对话`;
-      frag.appendChild(hint);
+    if (cursor < max) scheduleExpandedChunk(appendNext);
+    else {
+      appendExpandedLimitHint(messages, msgs.length, max);
+      hydrateMediaForCard(id).catch(() => {});
     }
-    messages.appendChild(frag);
+  }
+
+  function scheduleExpandedDetailRender(card, id) {
+    if (!isLiveExpandedCard(card, id)) return;
+    if (state.expandedRenderFrame != null) cancelAnimationFrame(state.expandedRenderFrame);
+    state.expandedRenderFrame = requestAnimationFrame(() => {
+      state.expandedRenderFrame = null;
+      if (!isLiveExpandedCard(card, id) || card.classList.contains('animating')) return;
+      renderExpandedDetail(card, id);
+    });
+  }
+
+  function cardVisualUpdateBlocked(card) {
+    return !!card?.matches('.morphing, .animating, .collapsing');
+  }
+
+  function flushCardVisualUpdate(id) {
+    if (!state.pendingCardUpdates.has(id)) return;
+    state.pendingCardUpdates.delete(id);
+    if (state.details.has(id)) updateCardDetail(id);
+    else updateCardLoadState(id);
   }
 
   function updateCardDetail(id) {
     const card = grid.querySelector(`.card[data-id="${CSS.escape(id)}"]`);
     if (!card) return;
+    if (cardVisualUpdateBlocked(card)) {
+      state.pendingCardUpdates.add(id);
+      return;
+    }
+    state.pendingCardUpdates.delete(id);
     const msgs = state.details.get(id);
     if (!msgs) return;
     const chat = state.chats.find(c => c.id === id);
@@ -2353,18 +2664,21 @@
     // single card the user actually expands, then discarded again after collapse.
     if (card.classList.contains('expanded') && !card.classList.contains('animating')) {
       clearExpandedDetail(card);
-      renderExpandedDetail(card, id);
-      hydrateMediaForCard(id).catch(() => {});
+      scheduleExpandedDetailRender(card, id);
     }
   }
 
   let observer = null;
   function observeCards() {
     observer?.disconnect();
-    if (!AUTO_BACKGROUND_PREFETCH) { observer = null; return; }
+    if (typeof IntersectionObserver !== 'function') {
+      grid.querySelectorAll('.card').forEach(card => card.classList.add('motionVisible'));
+      return;
+    }
     observer = new IntersectionObserver((entries) => {
       for (const e of entries) {
         const id = e.target.dataset.id;
+        e.target.classList.toggle('motionVisible', e.isIntersecting);
         if (e.isIntersecting) {
           // Network prefetch is disabled by default in v0.5. Persistent cache is hydrated when list metadata arrives.
           if (AUTO_BACKGROUND_PREFETCH) enqueueDetail(id, 'background');
@@ -2372,7 +2686,7 @@
           removeBackgroundQueued(id);
         }
       }
-    }, { root: content, rootMargin:'0px', threshold:.60 });
+    }, { root: content, rootMargin:'160px 0px', threshold:0 });
     grid.querySelectorAll('.card').forEach(card => observer.observe(card));
   }
 
@@ -2381,13 +2695,15 @@
     const safe = Date.now() < state.prefetchDisabledUntil ? '空闲预读已暂停' : '空闲慢速预读';
     stats.textContent = `列表 ${state.chats.length}${state.total ? ` / ${state.total}` : ''} · 当前 ${visible} · 缓存命中 ${state.cacheHits} · ${safe} · 已选 ${state.selected.size}`;
     const rateCooling = Date.now() < Math.max(state.rateLimitUntil, sharedNumber('chatdeck:rateLimitUntil'));
-    archiveBtn.disabled = deleteBtn.disabled = state.selected.size === 0 || state.working || state.manualLoading || rateCooling;
-    loadCountBtn.disabled = state.working || state.manualLoading || state.loadingList || rateCooling;
-    countToggle.disabled = state.working || state.manualLoading || state.loadingList || rateCooling;
+    const preparing = state.preparingBatch;
+    selectVisibleBtn.disabled = preparing;
+    archiveBtn.disabled = deleteBtn.disabled = state.selected.size === 0 || state.working || state.manualLoading || preparing || rateCooling;
+    loadCountBtn.disabled = state.working || state.manualLoading || state.loadingList || preparing || rateCooling;
+    countToggle.disabled = state.working || state.manualLoading || state.loadingList || preparing || rateCooling;
     loadCombo.classList.toggle('busy', state.manualLoading);
     // Conversation list pagination is intentionally independent from the detail queue.
     // Users can keep scrolling and fetching more cards while a long detail batch is running.
-    loadMoreBtn.disabled = state.loadingList || rateCooling || (state.total > 0 && state.offset >= state.total);
+    loadMoreBtn.disabled = state.loadingList || preparing || rateCooling || (state.total > 0 && state.offset >= state.total);
   }
 
   function setSurfaceRect(surface, rect) {
@@ -2400,8 +2716,10 @@
   const IDENTITY_MORPH = 'matrix3d(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1)';
 
   function rectToTransform(fromRect, layoutRect) {
-    const sx = Math.max(.0001, fromRect.width / layoutRect.width);
-    const sy = Math.max(.0001, fromRect.height / layoutRect.height);
+    const layoutWidth = Math.max(.0001, Number(layoutRect.width) || 0);
+    const layoutHeight = Math.max(.0001, Number(layoutRect.height) || 0);
+    const sx = Math.max(.0001, (Number(fromRect.width) || 0) / layoutWidth);
+    const sy = Math.max(.0001, (Number(fromRect.height) || 0) / layoutHeight);
     const dx = fromRect.left - layoutRect.left;
     const dy = fromRect.top - layoutRect.top;
 
@@ -2413,21 +2731,28 @@
     return `matrix3d(${sx},0,0,0,0,${sy},0,0,0,0,1,0,${dx},${dy},0,1)`;
   }
 
-  function targetRectForCard(startRect) {
+  function targetRectForCard(slotRect) {
     const contentRect = content.getBoundingClientRect();
     const gap = 12;
-    const targetWidth = Math.min(contentRect.width - 28, startRect.width * 3 + gap * 2);
-    const targetHeight = Math.min(contentRect.height - 24, startRect.height * 3 + gap * 2);
-    let left = startRect.left - (targetWidth - startRect.width) / 2;
-    let top = startRect.top - (targetHeight - startRect.height) / 2;
+    const maxWidth = Math.max(1, contentRect.width - 28);
+    const maxHeight = Math.max(1, contentRect.height - 24);
+    const targetWidth = Math.min(maxWidth, slotRect.width * 3 + gap * 2);
+    const targetHeight = Math.min(maxHeight, slotRect.height * 3 + gap * 2);
+    let left = slotRect.left - (targetWidth - slotRect.width) / 2;
+    let top = slotRect.top - (targetHeight - slotRect.height) / 2;
     left = Math.max(contentRect.left + 10, Math.min(left, contentRect.right - targetWidth - 10));
     top = Math.max(contentRect.top + 10, Math.min(top, contentRect.bottom - targetHeight - 10));
     return { left, top, width:targetWidth, height:targetHeight };
   }
 
-  function cancelMorphAuxAnimations() {
-    const aux = Array.isArray(state.morphAuxAnimations) ? state.morphAuxAnimations.splice(0) : [];
-    aux.forEach(anim => { try { anim.cancel(); } catch (_) {} });
+  function collapseMorphDuration(currentRect, homeRect, fullRect) {
+    const widthRange = Math.max(1, fullRect.width - homeRect.width);
+    const heightRange = Math.max(1, fullRect.height - homeRect.height);
+    const progress = Math.max(
+      Math.abs(currentRect.width - homeRect.width) / widthRange,
+      Math.abs(currentRect.height - homeRect.height) / heightRange
+    );
+    return Math.round(120 + 135 * Math.sqrt(Math.min(1, Math.max(0, progress))));
   }
 
   function compactVisualRect(card) {
@@ -2447,7 +2772,6 @@
     const anim = state.morphAnimation;
     state.morphAnimation = null;
     if (anim) { try { anim.cancel(); } catch (_) {} }
-    cancelMorphAuxAnimations();
   }
 
   // Freeze the exact visible pixels before reversing an opening animation midway.
@@ -2467,7 +2791,8 @@
     if (!card) return;
     const surface = card.querySelector('.cardSurface');
     cancelMorphAnimation();
-    card.classList.remove('expanded', 'morphing', 'animating', 'collapsing', 'compactRevealing');
+    card.classList.remove('expanded', 'morphing', 'animating', 'collapsing');
+    card.setAttribute('aria-expanded', 'false');
     if (surface) {
       surface.style.removeProperty('left');
       surface.style.removeProperty('top');
@@ -2490,6 +2815,19 @@
     surface.style.transform = 'none';
   }
 
+  function settleExpandedContent(card, id) {
+    flushCardVisualUpdate(id);
+    if (state.details.has(id)) {
+      scheduleExpandedDetailRender(card, id);
+      return;
+    }
+    const active = state.loadingIds.has(id)
+      || state.detailPromises.has(id)
+      || state.manualPendingIds.has(id)
+      || state.queue.some(item => item.id === id);
+    setExpandedLoading(card, active);
+  }
+
   function expandCard(card) {
     if (!card?.isConnected) return;
     clearTimeout(state.collapseTimer);
@@ -2503,13 +2841,14 @@
     // v0.9 behavior restored: measure the untouched hovered card first, then promote THAT SAME
     // DOM surface to its final fixed rect and invert it back over the original pixels.
     const startRect = surface.getBoundingClientRect();
-    const targetRect = targetRectForCard(startRect);
+    const targetRect = targetRectForCard(card.getBoundingClientRect());
 
     cancelMorphAnimation();
     card.classList.remove('collapsing');
     card.classList.add('morphing', 'expanded', 'animating');
     panel.classList.add('hasExpanded');
     state.expandedId = id;
+    card.setAttribute('aria-expanded', 'true');
 
     // No geometry transition is allowed here. The first painted frame is target geometry + inverse
     // transform, which is pixel-identical to startRect and therefore cannot fly in from top-left.
@@ -2521,11 +2860,10 @@
     void surface.offsetWidth;
     surface.style.removeProperty('transition');
 
-    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (reduced || typeof surface.animate !== 'function') {
+    if (typeof surface.animate !== 'function') {
       surface.style.transform = 'none';
       card.classList.remove('morphing', 'animating');
-      if (state.details.has(id)) renderExpandedDetail(card, id);
+      settleExpandedContent(card, id);
     } else {
       const anim = surface.animate(
         [
@@ -2545,23 +2883,19 @@
         settleOpenAnimation(surface, anim);
         if (card.isConnected && state.expandedId === id && !card.classList.contains('collapsing')) {
           card.classList.remove('morphing', 'animating');
-          if (state.details.has(id)) {
-            renderExpandedDetail(card, id);
-            hydrateMediaForCard(id).catch(() => {});
-          }
+          settleExpandedContent(card, id);
         }
       }).catch(() => {});
     }
 
-    if (!state.details.has(id)) {
-      setExpandedLoading(card, state.loadingIds.has(id));
-    } else if (needsMediaRefresh(state.details.get(id))) {
+    if (state.details.has(id) && needsMediaRefresh(state.details.get(id))) {
       // Refresh image metadata after the morph settles so network/DOM work cannot steal frames.
       setTimeout(() => {
         if (state.expandedId === id) refreshDetailForMedia(id).then(() => {
           const live = grid.querySelector(`.card[data-id=\"${CSS.escape(id)}\"]`);
-          if (live) { clearExpandedDetail(live); renderExpandedDetail(live, id); }
-          return hydrateMediaForCard(id);
+          if (!isLiveExpandedCard(live, id)) return;
+          clearExpandedDetail(live);
+          scheduleExpandedDetailRender(live, id);
         }).catch(() => {});
       }, 380);
     }
@@ -2585,6 +2919,7 @@
       cancelQueuedPriority(id);
       if (state.expandedId === id) state.expandedId = null;
       panel.classList.remove('hasExpanded');
+      flushCardVisualUpdate(id);
     };
 
     if (immediate || !card || !surface) {
@@ -2609,12 +2944,11 @@
        */
       const homeRect = compactVisualRect(card);
       const currentRect = freezeSurfaceAtCurrentPixels(surface);
-      card.classList.remove('animating', 'compactRevealing');
+      card.classList.remove('animating');
       card.classList.add('collapsing');
 
       const endTransform = rectToTransform(homeRect, currentRect);
-      const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
-      if (reduced || typeof surface.animate !== 'function') {
+      if (typeof surface.animate !== 'function') {
         finish();
         return;
       }
@@ -2622,14 +2956,16 @@
       // The detailed reading body fades out immediately; the geometry itself stays on the
       // compositor. This avoids the v1.15 main-thread layout jank while keeping the card shell
       // visibly connected to its source card.
+      const fullRect = targetRectForCard(card.getBoundingClientRect());
+      const duration = collapseMorphDuration(currentRect, homeRect, fullRect);
       const anim = surface.animate(
         [
           { transform: IDENTITY_MORPH },
           { transform: endTransform }
         ],
         {
-          duration: 245,
-          easing: 'cubic-bezier(.22,.61,.36,1)',
+          duration,
+          easing: 'cubic-bezier(.2,.75,.25,1)',
           fill: 'both'
         }
       );
@@ -2645,7 +2981,8 @@
         try { anim.commitStyles?.(); } catch (_) {}
         try { anim.cancel(); } catch (_) {}
         surface.style.transition = 'none';
-        card.classList.remove('expanded', 'morphing', 'animating', 'collapsing', 'compactRevealing');
+        card.classList.remove('expanded', 'morphing', 'animating', 'collapsing');
+        card.setAttribute('aria-expanded', 'false');
         surface.style.removeProperty('left');
         surface.style.removeProperty('top');
         surface.style.removeProperty('width');
@@ -2658,6 +2995,7 @@
         cancelQueuedPriority(id);
         if (state.expandedId === id) state.expandedId = null;
         panel.classList.remove('hasExpanded');
+        flushCardVisualUpdate(id);
       }).catch(() => {});
 
       setTimeout(() => {
@@ -2759,12 +3097,14 @@
       return;
     }
     const act = e.target.closest('[data-act]')?.dataset.act;
+    if (state.preparingBatch && ['loadMore', 'selectVisible', 'archive', 'delete'].includes(act)) return;
     if (e.target.closest('.launcher')) {
       markUserActivity();
       setPanelOpen(!state.opened);
       return;
     }
     if (act === 'close') { markUserActivity(); setPanelOpen(false); return; }
+    if (act === 'closeImageViewer') { closeImageViewer(); return; }
     if (act === 'toggleAutoExpand') { setAutoExpand(!state.autoExpand); return; }
     if (act === 'loadMore') { loadNextBatch(); return; }
     if (act === 'toggleCountMenu') { if (!countToggle.disabled) setCountMenu(!state.countMenuOpen); return; }
@@ -2784,10 +3124,18 @@
     if (speedChoice?.dataset.speed) { requestSpeedChoice(speedChoice.dataset.speed); return; }
     if (act === 'loadCount') { loadCountDetails(); return; }
     if (act === 'selectVisible') {
-      const list = filteredChats();
-      const all = list.length && list.every(c => state.selected.has(c.id));
-      for (const c of list) all ? state.selected.delete(c.id) : state.selected.add(c.id);
-      render(); observeCards(); return;
+      const cards = [...grid.querySelectorAll('.card[data-id]')];
+      const ids = cards.map(card => card.dataset.id).filter(Boolean);
+      const all = ids.length && ids.every(id => state.selected.has(id));
+      for (const id of ids) all ? state.selected.delete(id) : state.selected.add(id);
+      cards.forEach(card => {
+        const selected = state.selected.has(card.dataset.id);
+        card.classList.toggle('selected', selected);
+        const checkbox = card.querySelector('.check');
+        if (checkbox) checkbox.checked = selected;
+      });
+      updateStats();
+      return;
     }
     if (act === 'archive') { batchAction('archive', [...state.selected]); return; }
     if (act === 'delete') {
@@ -2835,7 +3183,7 @@
 
     // Manual mode: only a click on the non-interactive card surface expands it.
     // Buttons, checkbox controls and links retain their own behavior.
-    if (!state.autoExpand && !card.classList.contains('expanded') && !e.target.closest('button, input, label, a, .mediaTile, .compactMedia, .imageViewer')) {
+    if (!effectiveAutoExpand() && !card.classList.contains('expanded') && !e.target.closest('button, input, label, a, .mediaTile, .compactMedia, .imageViewer')) {
       expandCard(card);
       return;
     }
@@ -2849,10 +3197,15 @@
 
   root.addEventListener('pointerover', (e) => {
     markUserActivity();
-    if (!state.autoExpand) return;
+    if (!effectiveAutoExpand()) return;
     const card = e.target.closest('.card');
     if (!card) return;
-    if (e.relatedTarget && card.contains(e.relatedTarget)) return;
+    if (e.target.closest(cardInteractiveSelector)) {
+      clearTimeout(state.hoverTimer);
+      return;
+    }
+    const enteredFromControl = e.relatedTarget?.closest?.(cardInteractiveSelector);
+    if (e.relatedTarget && card.contains(e.relatedTarget) && !enteredFromControl) return;
     clearTimeout(state.collapseTimer);
     clearTimeout(state.hoverTimer);
     state.hoverTimer = setTimeout(() => expandCard(card), HOVER_EXPAND_DELAY_MS);
@@ -2861,7 +3214,7 @@
   root.addEventListener('pointerout', (e) => {
     if (state.imageViewerOpen) return;
     if (state.deletePopoverOpen) return;
-    if (!state.autoExpand) return;
+    if (!effectiveAutoExpand()) return;
     const card = e.target.closest('.card');
     if (!card) return;
     if (e.relatedTarget && card.contains(e.relatedTarget)) return;
@@ -2870,6 +3223,11 @@
   });
 
   updateAutoExpandUI();
+  preciseHoverQuery.addEventListener?.('change', () => {
+    clearTimeout(state.hoverTimer);
+    clearTimeout(state.collapseTimer);
+    updateAutoExpandUI();
+  });
   setCountChoice(state.loadCountChoice);
   applySpeedChoice(LOAD_SPEEDS[state.loadSpeedChoice] ? state.loadSpeedChoice : 'slow');
 
@@ -2884,13 +3242,30 @@
     // The lightbox owns outside clicks while it is open. Do not let the underlying
     // manual-expand handler interpret the same pointerdown as a request to collapse the card.
     if (state.imageViewerOpen || e.target.closest('.imageViewer')) return;
-    if (!state.autoExpand && state.expandedId) {
+    if (!effectiveAutoExpand() && state.expandedId) {
       const expandedCard = root.querySelector(`.card[data-id="${CSS.escape(state.expandedId)}"]`);
       const clickedCard = e.target.closest('.card');
       // A click on another card is handled by the click-to-expand path, which performs a clean
       // one-step switch. Any other click outside the expanded card collapses it.
       if (expandedCard && !expandedCard.contains(e.target) && !clickedCard) collapseExpanded(false);
     }
+  });
+
+  root.addEventListener('keydown', (e) => {
+    if (trapModalTab(e)) return;
+    const mediaPreview = e.target.closest?.('.mediaTile[data-url], .compactMedia[data-url]');
+    if (mediaPreview && ['Enter', ' '].includes(e.key)) {
+      e.preventDefault();
+      const img = mediaPreview.querySelector('img');
+      openImageViewer(mediaPreview.dataset.url, img?.alt || '对话图片预览');
+      return;
+    }
+    const card = e.target.matches?.('.card') ? e.target : null;
+    if (!card || !['Enter', ' '].includes(e.key)) return;
+    e.preventDefault();
+    markUserActivity();
+    if (state.expandedId === card.dataset.id) collapseExpanded(false);
+    else expandCard(card);
   });
 
   let searchRenderTimer = null;
@@ -2904,7 +3279,7 @@
   let scrollLoadTimer = null;
   content.addEventListener('scroll', () => {
     markUserActivity();
-    if (state.expandedId && state.autoExpand) collapseExpanded(true);
+    if (state.expandedId && effectiveAutoExpand()) collapseExpanded(true);
     clearTimeout(scrollLoadTimer);
     // Detail loading and list pagination are separate lanes. A long “加载 N 个” job must not freeze infinite scrolling.
     if (state.loadingList || !state.total || state.offset >= state.total) return;
@@ -2914,13 +3289,35 @@
   }, { passive:true });
 
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden && state.opened) { markUserActivity(); pumpQueue(); scheduleIdlePrefetch(); }
+    if (document.hidden) {
+      stopIdlePrefetch();
+      stopRateBannerTimer();
+      return;
+    }
+    if (state.opened) { markUserActivity(); pumpQueue(); scheduleIdlePrefetch(); startRateBannerTimer(); }
   });
 
-  updateRateBanner();
-  setInterval(() => { if (Date.now() < Math.max(state.rateLimitUntil, sharedNumber('chatdeck:rateLimitUntil'))) updateRateBanner(); }, 1000);
-  openCacheDb().catch(() => {});
-  scheduleIdlePrefetch();
+  window.addEventListener('storage', (e) => {
+    if (!e.key?.startsWith('chatdeck:')) return;
+    if (e.key === 'chatdeck:rateLimitUntil') state.rateLimitUntil = sharedNumber(e.key);
+    if (e.key === 'chatdeck:rateLimitHits') state.rateLimitHits = sharedNumber(e.key);
+    if (e.key === 'chatdeck:prefetchDisabledUntil') state.prefetchDisabledUntil = sharedNumber(e.key);
+    updateRateBanner();
+    if (state.opened && Date.now() >= state.rateLimitUntil) pumpQueue();
+  });
+
+  let viewportResizeFrame = null;
+  const handleViewportResize = () => {
+    if (viewportResizeFrame != null) cancelAnimationFrame(viewportResizeFrame);
+    viewportResizeFrame = requestAnimationFrame(() => {
+      viewportResizeFrame = null;
+      if (!state.opened) return;
+      closeDeletePopover();
+      if (state.expandedId) collapseExpanded(true);
+    });
+  };
+  window.addEventListener('resize', handleViewportResize, { passive:true });
+  window.visualViewport?.addEventListener('resize', handleViewportResize, { passive:true });
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && state.imageViewerOpen) {
