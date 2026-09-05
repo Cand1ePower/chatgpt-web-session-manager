@@ -45,6 +45,8 @@ The extension depends on the private conversation endpoints currently used by th
 
 Message details are cached by the content script in IndexedDB owned by the `chatgpt.com` site origin. They are not uploaded to this repository or another service. Clearing ChatGPT site data also clears this cache. Archive and delete are real server-side actions; review the confirmation UI before continuing.
 
+See the [privacy policy](PRIVACY.md) for the full data-handling description.
+
 ## Local demo and verification
 
 The repository includes a fully isolated demo fixture that does not require a ChatGPT login:
